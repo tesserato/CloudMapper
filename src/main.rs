@@ -1,197 +1,204 @@
-use std::fs::File;
-use std::io::{self, ErrorKind, Read, Write};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread; // Used for potential retries or parallelism later if needed
-use std::time::Duration;
-use std::time::Instant; // Used for potential sleep on retry
+// main.rs
+
+// Declare the library module (expects lib.rs in the same src directory or configured in Cargo.toml)
+mod lib;
+
+use std::process::{Command, Stdio, Output};
+use std::time::Instant;
+use std::io::{self, Write, ErrorKind}; // Added ErrorKind
+use std::fs; // Added for file system operations if needed outside lib
 
 // --- Configuration ---
 const RCLONE_EXECUTABLE: &str = "rclone"; // Or specify full path if not in PATH
-const OUTPUT_ROOT_DIR: &str = "./rclone_json_output"; // Directory to save JSON files
-                                                      // --- End Configuration ---
+// Output report filenames
+const TREE_OUTPUT_FILE: &str = "files.txt";
+const DUPLICATES_OUTPUT_FILE: &str = "duplicates.txt";
+const SIZE_OUTPUT_FILE: &str = "size_used.txt";
+// Set to true to enable duplicate detection and generate duplicates.txt
+const ENABLE_DUPLICATES_REPORT: bool = true;
+// --- End Configuration ---
 
-// Function to sanitize remote names for use in filenames
-fn sanitize_filename(name: &str) -> String {
-    name.replace(':', "")
-        .replace('.', "_DOT_")
-        .replace('@', "_AT_")
-        .replace(' ', "_")
-        .trim() // Remove leading/trailing whitespace just in case
-        .to_string()
+
+// Helper to run a command and capture output, providing better error context
+fn run_command(cmd_name: &str, args: &[&str]) -> Result<Output, io::Error> {
+    println!("> Running: {} {}", cmd_name, args.join(" "));
+    let output = Command::new(cmd_name)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output(); // Execute and wait
+
+    match output {
+        Ok(ref out) => {
+            if !out.status.success() {
+                 // stderr is often useful when the command fails
+                 eprintln!("  Command failed with status: {}", out.status);
+                 let stderr_str = String::from_utf8_lossy(&out.stderr);
+                 if !stderr_str.is_empty() {
+                     eprintln!("  stderr:\n---\n{}\n---", stderr_str.trim());
+                 }
+            }
+        }
+        Err(ref e) => {
+            eprintln!("  Failed to execute command '{}': {}", cmd_name, e);
+            if e.kind() == ErrorKind::NotFound {
+                 eprintln!("  Hint: Make sure '{}' is installed and accessible in your system's PATH.", cmd_name);
+            }
+        }
+    }
+    output // Return the original result
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting rclone lsjson process...");
 
-    // --- 1. Create Output Directory ---
-    // Ensure the output directory exists, create it if not.
-    std::fs::create_dir_all(OUTPUT_ROOT_DIR)?;
-    println!("Output directory '{}' ensured.", OUTPUT_ROOT_DIR);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting rclone data processing...");
+    let overall_start_time = Instant::now();
+
+    // --- 1. Initialize Files container from lib ---
+    let mut files_collection = lib::Files::new();
 
     // --- 2. Get List of Remotes ---
     println!("Fetching list of rclone remotes...");
-    let list_remotes_output = Command::new(RCLONE_EXECUTABLE).arg("listremotes").output(); // Capture output
-
-    let remote_names: Vec<String> = match list_remotes_output {
+    let remote_names: Vec<String> = match run_command(RCLONE_EXECUTABLE, &["listremotes"]) {
         Ok(output) => {
             if !output.status.success() {
-                eprintln!(
-                    "Error running '{} listremotes': {}",
-                    RCLONE_EXECUTABLE, output.status
-                );
-                eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-                // Using a more specific error type or Box<dyn Error>
+                // Error already printed by run_command helper
                 return Err(Box::new(io::Error::new(
                     ErrorKind::Other,
-                    "Failed to list rclone remotes",
+                    format!("'{} listremotes' failed.", RCLONE_EXECUTABLE),
                 )));
             }
             let stdout_str = String::from_utf8_lossy(&output.stdout);
-            // Split into lines, trim whitespace, filter out empty lines, collect
             stdout_str
                 .lines()
                 .map(|line| line.trim())
                 .filter(|line| !line.is_empty())
-                .map(String::from) // Convert &str to String
+                .map(String::from)
                 .collect()
         }
         Err(e) => {
-            eprintln!(
-                "Failed to execute '{} listremotes': {}",
-                RCLONE_EXECUTABLE, e
-            );
-            eprintln!(
-                "Ensure '{}' is installed and in your PATH.",
-                RCLONE_EXECUTABLE
-            );
-            return Err(Box::new(e)); // Propagate the error
+            // Error already printed by run_command helper
+            return Err(Box::new(e)); // Propagate the execution error
         }
     };
 
     if remote_names.is_empty() {
-        println!("No rclone remotes found. Exiting.");
+        println!("No rclone remotes found or 'rclone listremotes' failed. Exiting.");
         return Ok(());
     }
 
-    println!("Found remotes: {:?}", remote_names);
+    println!("Found {} remotes: {:?}", remote_names.len(), remote_names);
+    println!("==========================================");
 
-    // --- 3. Record Start Time ---
-    let start_time = Instant::now();
-    let mut success_count = 0;
-    let mut error_count = 0;
 
-    // --- 4. Iterate Through Remotes and Run lsjson ---
+    // --- 3. Iterate Through Remotes and Process lsjson ---
+    let mut process_errors: u32 = 0;
+    let mut remotes_processed_successfully: u32 = 0;
+    let loop_start_time = Instant::now();
+
     for remote_name in &remote_names {
-        println!("------------------------------------------");
         println!("Processing remote: {}", remote_name);
+        let remote_start_time = Instant::now();
 
-        // Sanitize name and create output path
-        let sanitized_name = sanitize_filename(remote_name);
-        let mut output_path = PathBuf::from(OUTPUT_ROOT_DIR);
-        output_path.push(format!("{}.json", sanitized_name));
-
-        println!("  Output file: {}", output_path.display());
-
-        // Build the rclone lsjson command
-        // Use Stdio::piped() for stdout to potentially stream large outputs later,
-        // although here we capture it fully with output().
-        let lsjson_cmd = Command::new(RCLONE_EXECUTABLE)
-            .args(&[
-                "lsjson",
-                "-R",          // Recursive
-                "--hash",      // Include hashes (MD5, SHA1, etc. depending on remote)
-                "--fast-list", // Use faster listing method if available
-                remote_name,   // The remote name itself
-            ])
-            .stdout(Stdio::piped()) // We want to capture stdout
-            .stderr(Stdio::piped()) // Capture stderr too for error reporting
-            .output(); // Execute and wait for completion
-
-        match lsjson_cmd {
+        // --- 3a. Run rclone lsjson ---
+        let lsjson_args = &["lsjson", "-R", "--hash", "--fast-list", remote_name];
+        match run_command(RCLONE_EXECUTABLE, lsjson_args) {
             Ok(output) => {
                 if output.status.success() {
-                    // Write the captured stdout (JSON data) to the file
-                    match File::create(&output_path) {
-                        Ok(mut file) => {
-                            if let Err(e) = file.write_all(&output.stdout) {
-                                eprintln!(
-                                    "  Error writing JSON to file {}: {}",
-                                    output_path.display(),
-                                    e
-                                );
-                                error_count += 1;
-                            } else {
-                                println!(
-                                    "  Successfully wrote JSON for {} to {}",
-                                    remote_name,
-                                    output_path.display()
-                                );
-                                success_count += 1;
-                            }
+                    let json_string = String::from_utf8_lossy(&output.stdout);
+
+                    // --- 3b. Parse JSON using lib function ---
+                    match lib::parse_rclone_lsjson(&json_string) {
+                        Ok(raw_files) => {
+                             let file_count = raw_files.len();
+                            // --- 3c. Add parsed data using lib function ---
+                            files_collection.add_remote_files(remote_name, raw_files);
+                            remotes_processed_successfully += 1;
+                            println!(
+                                "  Successfully processed {} items for '{}' in {:.2}s",
+                                file_count,
+                                remote_name,
+                                remote_start_time.elapsed().as_secs_f32()
+                            );
                         }
                         Err(e) => {
-                            eprintln!(
-                                "  Error creating output file {}: {}",
-                                output_path.display(),
-                                e
-                            );
-                            error_count += 1;
+                            eprintln!("  Error parsing JSON for remote '{}': {}", remote_name, e);
+                            // Optionally save the problematic JSON for debugging
+                            // let _ = fs::write(format!("{}_error.json", remote_name.replace(":", "_")), &output.stdout);
+                            process_errors += 1;
                         }
                     }
                 } else {
-                    // rclone lsjson command failed
-                    eprintln!(
-                        "  Error running rclone lsjson for {}: {}",
-                        remote_name, output.status
-                    );
-                    // Print stderr from the failed rclone command
-                    let stderr_str = String::from_utf8_lossy(&output.stderr);
-                    if !stderr_str.is_empty() {
-                        eprintln!("  rclone stderr:\n---\n{}\n---", stderr_str.trim());
-                    }
-                    error_count += 1;
+                    // rclone lsjson command failed, error already printed by run_command
+                    process_errors += 1;
+                     eprintln!("  Failed to list items for remote '{}'.", remote_name);
                 }
             }
+            Err(_) => {
+                // Failed to execute rclone lsjson, error already printed by run_command
+                process_errors += 1;
+                 eprintln!("  Skipping remote '{}' due to execution failure.", remote_name);
+            }
+        }
+        println!("------------------------------------------");
+
+    } // End of remote loop
+
+    let loop_duration = loop_start_time.elapsed();
+    println!("Finished processing all remotes in {:.2}s.", loop_duration.as_secs_f32());
+    println!("==========================================");
+
+
+    // --- 4. Generate Reports (only if some data was collected) ---
+    if files_collection.files.is_empty() {
+         if process_errors > 0 {
+             println!("No file data was collected due to processing errors. Skipping report generation.");
+         } else {
+             println!("No files found across any successfully processed remotes. Skipping report generation.");
+         }
+    } else {
+        println!("Generating final reports...");
+        let report_start_time = Instant::now();
+        match lib::generate_reports(
+            &mut files_collection, // Pass mutable reference
+            ENABLE_DUPLICATES_REPORT,
+            TREE_OUTPUT_FILE,
+            DUPLICATES_OUTPUT_FILE,
+            SIZE_OUTPUT_FILE,
+        ) {
+            Ok(_) => {
+                 println!(
+                     "Reports generated successfully in {:.2}s.",
+                     report_start_time.elapsed().as_secs_f32()
+                 );
+            },
             Err(e) => {
-                // Failed even to start the rclone lsjson process
-                eprintln!(
-                    "  Error executing rclone lsjson command for {}: {}",
-                    remote_name, e
-                );
-                error_count += 1;
+                eprintln!("Error generating final reports: {}", e);
+                // Treat report generation failure as a process error
+                process_errors += 1;
             }
         }
     }
 
-    // --- 5. Calculate and Print Duration ---
-    let end_time = Instant::now();
-    let duration = end_time.duration_since(start_time);
-    let total_seconds = duration.as_secs();
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
 
+    // --- 5. Print Summary ---
+    let total_duration = overall_start_time.elapsed();
     println!("==========================================");
-    println!("Processing finished.");
-    println!("Successfully processed: {}", success_count);
-    println!("Failed attempts:        {}", error_count);
-    println!(
-        "Total duration: {:02} min {:02} sec ({:.3} s)",
-        minutes,
-        seconds,
-        duration.as_secs_f64()
-    );
+    println!("Processing Summary:");
+    println!("  Total time: {:.2}s", total_duration.as_secs_f32());
+    println!("  Remotes found: {}", remote_names.len());
+    println!("  Remotes processed successfully: {}", remotes_processed_successfully);
+    println!("  Processing errors encountered: {}", process_errors);
     println!("==========================================");
 
-    // Return Ok if the overall process structure completed,
-    // even if individual remotes failed. Modify if strict success is needed.
-    if error_count > 0 {
-        // Optionally return an error if *any* remote failed
-        // return Err(Box::new(io::Error::new(ErrorKind::Other, "One or more remotes failed")));
-        println!("Completed with some errors.");
-    } else {
-        println!("All remotes processed successfully.");
+    // Optionally return an error from main if any errors occurred
+    if process_errors > 0 {
+        eprintln!("Completed with errors.");
+        // Return a generic error to indicate failure
+        // std::process::exit(1); // Or exit directly
+         return Err(Box::new(io::Error::new(ErrorKind::Other, "Processing completed with errors")));
     }
 
+    println!("Processing completed successfully.");
     Ok(())
 }

@@ -1,6 +1,15 @@
 [package]
-name = "cloudmapper"
+name = "cloudmapper" # Choose your project name
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+serde = { version = "1.0", features = [
+    "derive",
+] } # For JSON deserialization in lib.rs
+serde_json = "1.0" # For parsing JSON strings in lib.rs
+human_bytes = "0.4" # For human-readable sizes in lib.rs
+# Add clap here if you decide to add command-line arguments to main.rs later
+# clap = { version = "4.4", features = ["derive"] }
