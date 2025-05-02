@@ -10,3 +10,4 @@ serde = { version = "1.0", features = [
 serde_json = "1.0" # For parsing JSON strings in lib.rs
 human_bytes = "0.4" # For human-readable sizes in lib.rs
 clap = { version = "4.4", features = ["derive", "env"] }
+rayon = "1.10.0"

@@ -1,21 +1,20 @@
 mod lib;
 
-// Import clap
 use clap::Parser;
+use rayon::prelude::*;
 
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::time::Instant; // Import PathBuf for path manipulation
+use std::time::Instant;
 
 // --- Configuration Constants (Base Filenames) ---
-// We keep these for the base names, the directory comes from args
 const TREE_OUTPUT_FILE_NAME: &str = "files.txt";
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
-const ENABLE_DUPLICATES_REPORT: bool = true; // Keep this toggle if needed, or make it an arg too
-                                             // --- End Configuration Constants ---
+const ENABLE_DUPLICATES_REPORT: bool = true;
+// --- End Configuration Constants ---
 
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
@@ -30,26 +29,15 @@ struct Args {
     rclone_config: Option<String>,
 
     /// Path to the directory for output reports
-    #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = "./cloud")]
+    #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = ".")]
     output_path: String,
-    // Example: Add the duplicate flag as an argument too
-    // /// Enable duplicate file detection report
-    // #[arg(long, short = 'd', default_value_t = true)] // Or false if default off
-    // duplicates: bool,
+    /// Enable duplicate file detection report
+    #[arg(long, short = 'd', default_value_t = true)] // Or false if default off
+    duplicates: bool,
 }
 
-
-/// Runs a command, capturing and displaying stdout and stderr.
-///
-/// If the command fails (exits with non-zero status), the stderr is displayed
-/// and an error is returned. If the command is not found, a hint is printed to
-/// verify the executable is installed or the path is correct.
-///
-/// The provided `args` are joined carefully to handle spaces in the arguments.
-/// The display string will be constructed with double quotes around the
-/// arguments if they contain spaces.
+// Helper to run a command
 fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
-    // Construct display string carefully, handling potential spaces in args
     let args_display = args
         .iter()
         .map(|&a| {
@@ -62,13 +50,11 @@ fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
         .collect::<Vec<_>>()
         .join(" ");
     println!("> Running: {} {}", executable, args_display);
-
     let output = Command::new(executable)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output(); // Execute and wait
-
+        .output();
     match output {
         Ok(ref out) => {
             if !out.status.success() {
@@ -89,8 +75,12 @@ fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
             }
         }
     }
-    output // Return the original result
+    output
 }
+
+// Define a type alias for the result of processing a single remote
+type RemoteProcessingResult = Result<(String, Vec<lib::RawFile>), (String, String)>;
+//                             Ok(remote_name, files)      Err(remote_name, error_message)
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Parse Command Line Arguments ---
@@ -120,16 +110,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Fetching list of rclone remotes...");
 
     // Build common args (potentially including --config)
-    let mut common_rclone_args: Vec<&str> = Vec::new();
+    let mut common_rclone_args: Vec<String> = Vec::new();
     if let Some(config_path) = &args.rclone_config {
-        common_rclone_args.push("--config");
-        common_rclone_args.push(config_path); // config_path lives long enough
+        common_rclone_args.push("--config".to_string()); // Push String
+        common_rclone_args.push(config_path.clone()); // Push String
     }
 
-    let mut list_remotes_args = common_rclone_args.clone(); // Start with common args
-    list_remotes_args.push("listremotes");
+    let mut list_remotes_args_for_cmd: Vec<&str> = common_rclone_args
+        .iter()
+        .map(|s| s.as_ref()) // Use as_ref()
+        .collect();
+    list_remotes_args_for_cmd.push("listremotes"); // Push &str
 
-    let remote_names: Vec<String> = match run_command(rclone_executable, &list_remotes_args) {
+    let remote_names: Vec<String> = match run_command(rclone_executable, &list_remotes_args_for_cmd)
+    {
         Ok(output) => {
             if !output.status.success() {
                 return Err(Box::new(io::Error::new(
@@ -137,8 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     format!("'{} listremotes' failed.", rclone_executable),
                 )));
             }
-            let stdout_str = String::from_utf8_lossy(&output.stdout);
-            stdout_str
+            String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .map(|line| line.trim())
                 .filter(|line| !line.is_empty())
@@ -146,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect()
         }
         Err(e) => {
-            return Err(Box::new(e)); // Propagate the execution error
+            return Err(Box::new(e));
         }
     };
 
@@ -158,72 +151,131 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Found {} remotes: {:?}", remote_names.len(), remote_names);
     println!("==========================================");
 
-    // --- 3. Iterate Through Remotes and Process lsjson ---
-    let mut process_errors: u32 = 0;
-    let mut remotes_processed_successfully: u32 = 0;
+    // --- 3. Process Remotes in Parallel ---
+    println!("Processing remotes in parallel...");
     let loop_start_time = Instant::now();
 
-    for remote_name in &remote_names {
-        println!("Processing remote: {}", remote_name);
-        let remote_start_time = Instant::now();
+    // Use rayon's par_iter to map over remote names in parallel.
+    // Collect results into a Vec.
+    let results: Vec<RemoteProcessingResult> = remote_names
+        .par_iter() // Create parallel iterator
+        .map(|remote_name| {
+            // This closure runs potentially in parallel for each remote_name
+            println!("  Starting processing for: {}", remote_name);
+            let start = Instant::now();
 
-        // --- 3a. Run rclone lsjson ---
-        // Build args for this specific command
-        let mut lsjson_args = common_rclone_args.clone(); // Start with common args
-        lsjson_args.extend(&["lsjson", "-R", "--hash", "--fast-list", remote_name]); // Add lsjson specific args
+            // Clone common args (which are Vec<String>) for this thread/task
+            let mut lsjson_args_owned: Vec<String> = common_rclone_args.clone();
 
-        match run_command(rclone_executable, &lsjson_args) {
-            // Pass dynamic args
-            Ok(output) => {
-                if output.status.success() {
-                    let json_string = String::from_utf8_lossy(&output.stdout);
-                    match lib::parse_rclone_lsjson(&json_string) {
-                        Ok(raw_files) => {
-                            let file_count = raw_files.len();
-                            files_collection.add_remote_files(remote_name, raw_files);
-                            remotes_processed_successfully += 1;
-                            println!(
-                                "  Successfully processed {} items for '{}' in {:.2}s",
-                                file_count,
-                                remote_name,
-                                remote_start_time.elapsed().as_secs_f32()
-                            );
+            // Extend the Vec<String> with more Strings
+            lsjson_args_owned.extend(vec![
+                "lsjson".to_string(),
+                "-R".to_string(),
+                "--hash".to_string(),
+                "--fast-list".to_string(),
+                remote_name.clone(), // remote_name is &String, clone gives String
+            ]);
+
+            // Convert Vec<String> to Vec<&str> *just* for the run_command call
+            let lsjson_args_for_cmd: Vec<&str> = lsjson_args_owned
+                .iter()
+                .map(|s| s.as_ref()) // Use as_ref()
+                .collect();
+
+            // Execute the command
+            match run_command(rclone_executable, &lsjson_args_for_cmd) {
+                // Pass Vec<&str>
+                Ok(output) => {
+                    // ... (rest of the match arm remains the same)
+                    if output.status.success() {
+                        let json_string = String::from_utf8_lossy(&output.stdout);
+                        // Parse JSON
+                        match lib::parse_rclone_lsjson(&json_string) {
+                            Ok(raw_files) => {
+                                let duration = start.elapsed();
+                                println!(
+                                    "  Finished processing {} ({} items) in {:.2}s",
+                                    remote_name,
+                                    raw_files.len(),
+                                    duration.as_secs_f32()
+                                );
+                                // Success: Return remote name and parsed files
+                                Ok((remote_name.clone(), raw_files))
+                            }
+                            Err(e) => {
+                                // JSON parsing error
+                                let err_msg = format!(
+                                    "Error parsing JSON for remote '{}': {}",
+                                    remote_name, e
+                                );
+                                eprintln!("  {}", err_msg);
+                                // Failure: Return remote name and error message
+                                Err((remote_name.clone(), err_msg))
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("  Error parsing JSON for remote '{}': {}", remote_name, e);
-                            process_errors += 1;
-                        }
+                    } else {
+                        // rclone command failed
+                        let err_msg = format!(
+                            "rclone command failed for remote '{}' with status {}",
+                            remote_name, output.status
+                        );
+                        // stderr already printed by run_command
+                        eprintln!("  {}", err_msg);
+                        // Failure: Return remote name and error message
+                        Err((remote_name.clone(), err_msg))
                     }
-                } else {
-                    process_errors += 1;
-                    eprintln!("  Failed to list items for remote '{}'.", remote_name);
+                }
+                Err(e) => {
+                    // Failed to execute rclone command
+                    let err_msg = format!(
+                        "Error executing rclone command for remote '{}': {}",
+                        remote_name, e
+                    );
+                    // stderr already printed by run_command
+                    eprintln!("  {}", err_msg);
+                    // Failure: Return remote name and error message
+                    Err((remote_name.clone(), err_msg))
                 }
             }
-            Err(_) => {
-                process_errors += 1;
-                eprintln!(
-                    "  Skipping remote '{}' due to execution failure.",
-                    remote_name
-                );
-            }
-        }
-        println!("------------------------------------------");
-    } // End of remote loop
+        })
+        .collect(); // Collect results from all parallel tasks into a Vec
 
     let loop_duration = loop_start_time.elapsed();
     println!(
-        "Finished processing all remotes in {:.2}s.",
+        "Finished parallel processing phase in {:.2}s.",
         loop_duration.as_secs_f32()
     );
     println!("==========================================");
+    println!("Aggregating results...");
 
-    // --- 4. Generate Reports (only if some data was collected) ---
+    // --- 3b. Aggregate Results Sequentially ---
+    // Iterate through the collected results sequentially to safely update shared state
+    let mut process_errors: u32 = 0;
+    let mut remotes_processed_successfully: u32 = 0;
+    for result in results {
+        match result {
+            Ok((remote_name, raw_files)) => {
+                // Add parsed data using lib function
+                files_collection.add_remote_files(&remote_name, raw_files);
+                remotes_processed_successfully += 1;
+                // Success message already printed in the parallel task
+            }
+            Err((_remote_name, _error_message)) => {
+                // Error message already printed in the parallel task
+                process_errors += 1;
+            }
+        }
+    }
+
+    // --- 4. Generate Reports ( uses aggregated data) ---
     if files_collection.files.is_empty() {
-        // Message depends on whether errors occurred
         if process_errors > 0 {
             println!(
                 "No file data was collected due to processing errors. Skipping report generation."
             );
+        } else if remotes_processed_successfully == 0 && !remote_names.is_empty() {
+            // This case might mean listremotes worked but all lsjson calls failed before parsing
+            println!("No data successfully processed from any remote. Skipping report generation.");
         } else {
             println!("No files found across any successfully processed remotes. Skipping report generation.");
         }
@@ -239,7 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match lib::generate_reports(
             &mut files_collection,
-            ENABLE_DUPLICATES_REPORT, // Could also use args.duplicates if added
+            args.duplicates,
             tree_output_path.to_str().unwrap_or_default(), // Convert PathBuf to &str
             duplicates_output_path.to_str().unwrap_or_default(),
             size_output_path.to_str().unwrap_or_default(),
@@ -257,13 +309,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 eprintln!("Error generating final reports: {}", e);
-                process_errors += 1;
+                process_errors += 1; // Count report generation failure as an error
             }
         }
     }
 
     // --- 5. Print Summary ---
-    // (Summary printing code remains the same)
+    // (Remains the same)
     let total_duration = overall_start_time.elapsed();
     println!("==========================================");
     println!("Processing Summary:");
