@@ -203,11 +203,11 @@ impl File {
         let indent = " ".repeat(indent_size * self.path.len());
 
         let starter = if self.is_dir { "📁" } else { "📄" }; // Icons
-        let dot_ext = if !self.is_dir && !self.ext.is_empty() {
-            format!(".{}", self.ext)
-        } else {
-            "".to_string()
-        };
+        // let dot_ext = if !self.is_dir && !self.ext.is_empty() {
+        //     format!(".{}", self.ext)
+        // } else {
+        //     "".to_string()
+        // };
 
         // Calculate size (recursive sum for dirs, own size for files)
         let mut total_size: u64 = if self.size >= 0 { self.size as u64 } else { 0 };
@@ -260,8 +260,8 @@ impl File {
 
         // Format the current line using the calculated indent
         let entry_str = format!(
-            "{}{} {}{} 💾 {} 📅 {}",
-            indent, starter, name, dot_ext, size_str, modified_str
+            "{}{} {} 💾 {} 📅 {}",
+            indent, starter, name, size_str, modified_str
         );
 
         // Combine current entry with its children strings
@@ -527,14 +527,14 @@ impl Files {
         }
 
         // Format final output with header/footer
-        let header = format!(
-            "Total size across all services: {}",
-            human_bytes(grand_total_size as f64)
-        );
-        final_text.insert(0, header.clone());
-        final_text.insert(1, "=".repeat(header.len()));
-        final_text.insert(2, "".to_string()); // Blank line after header block
-        final_text.push("=".repeat(header.len())); // Footer separator
+        // let header = format!(
+        //     "Total size across all services: {}",
+        //     human_bytes(grand_total_size as f64)
+        // );
+        // final_text.insert(0, header.clone());
+        // final_text.insert(1, "=".repeat(header.len()));
+        // final_text.insert(2, "".to_string()); // Blank line after header block
+        // final_text.push("=".repeat(header.len())); // Footer separator
 
         (final_text.join("\n"), grand_total_size, service_sizes)
     }
