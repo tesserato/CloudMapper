@@ -11,7 +11,6 @@ use std::time::Instant;
 const TREE_OUTPUT_FILE_NAME: &str = "files.txt";
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
-const ENABLE_DUPLICATES_REPORT: bool = true;
 // --- End Configuration Constants ---
 
 // --- Command Line Argument Definition ---
@@ -30,7 +29,7 @@ struct Args {
     #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = "./cloud")]
     output_path: String,
     /// Enable duplicate file detection report
-    #[arg(long, short = 'd', default_value_t = true)] // Or false if default off
+    #[arg(long, short = 'd', default_value_t = true, env = "RCLONE_ANALYZER_DUPLICATES")]
     duplicates: bool,
 }
 
@@ -92,6 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Using rclone config: {}", conf);
     }
     println!("Output directory: {}", args.output_path);
+    println!("Duplicates report enabled: {}", args.duplicates);
 
     println!("Starting rclone data processing...");
     let overall_start_time = Instant::now();
@@ -132,8 +132,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .map(|line| line.trim())
-                .filter(|line| !line.is_empty())
-                .map(String::from)
+                .filter(|line| !line.is_empty() && line.ends_with(':')) // Filter for lines ending with ':'
+                .map(|line| line.trim_end_matches(':').to_string()) // Remove trailing ':' and collect
                 .collect()
         }
         Err(e) => {
@@ -165,13 +165,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Clone common args (which are Vec<String>) for this thread/task
             let mut lsjson_args_owned: Vec<String> = common_rclone_args.clone();
 
+            // Format the remote target including the colon
+            let remote_target = format!("{}:", remote_name);
+
             // Extend the Vec<String> with more Strings
             lsjson_args_owned.extend(vec![
                 "lsjson".to_string(),
                 "-R".to_string(),
                 "--hash".to_string(),
                 "--fast-list".to_string(),
-                remote_name.clone(), // remote_name is &String, clone gives String
+                remote_target, // Use "remote:" format
             ]);
 
             // Convert Vec<String> to Vec<&str> *just* for the run_command call
@@ -289,7 +292,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match cloudmapper::generate_reports(
             &mut files_collection,
-            args.duplicates,
+            args.duplicates, // Pass CLI flag value
             tree_output_path.to_str().unwrap_or_default(), // Convert PathBuf to &str
             duplicates_output_path.to_str().unwrap_or_default(),
             size_output_path.to_str().unwrap_or_default(),
@@ -301,7 +304,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!("  Tree report: {}", tree_output_path.display());
                 println!("  Size report: {}", size_output_path.display());
-                if ENABLE_DUPLICATES_REPORT {
+                if args.duplicates { // Check CLI flag again for printing message
                     println!("  Duplicates report: {}", duplicates_output_path.display());
                 }
             }
@@ -313,7 +316,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- 5. Print Summary ---
-    // (Remains the same)
     let total_duration = overall_start_time.elapsed();
     println!("==========================================");
     println!("Processing Summary:");

@@ -406,8 +406,8 @@ impl Files {
                     if let Some(file) = self.files.get(key) {
                         // Only consider actual files with non-negative size
                         if !file.is_dir && file.size >= 0 {
-                            let service_and_path = format!("{}{}", file.service, file.path.join("/"));
-                            paths.push(service_and_path); 
+                            let service_and_path = format!("{}:{}", file.service, file.path.join("/")); // Use colon separator for clarity
+                            paths.push(service_and_path);
                             valid_files_found += 1;
 
                             // Store size (assume all files with same hash have same size)
@@ -445,10 +445,12 @@ impl Files {
         println!("Found {} sets of duplicate files.", self.duplicates.len());
     }
 
-    // Generates the formatted tree string and total size.
-    pub fn generate_tree_output(&self) -> (String, u64) {
+    /// Generates the formatted tree string, total size, and per-service sizes.
+    /// Returns: (Tree String, Grand Total Size, Map<ServiceName, ServiceTotalSize>)
+    pub fn generate_tree_output(&self) -> (String, u64, HashMap<String, u64>) {
         let mut final_text: Vec<String> = Vec::new();
         let mut grand_total_size: u64 = 0;
+        let mut service_sizes: HashMap<String, u64> = HashMap::new(); // To store size per service
 
         // Sort services alphabetically
         let mut sorted_services: Vec<&String> = self.roots_by_service.keys().collect();
@@ -485,7 +487,7 @@ impl Files {
                     let (entry_str, entry_calculated_size) =
                         root_file.format_tree_entry(indent_size_per_level, &self.files);
                     service_entries_lines.push(entry_str); // Add the formatted string
-                    service_total_size += entry_calculated_size; // Accumulate size
+                    service_total_size += entry_calculated_size; // Accumulate size for this service
                 } else {
                     eprintln!(
                         "Warning: Root key '{}' not found for service '{}'.",
@@ -507,6 +509,7 @@ impl Files {
             final_text.push("".to_string()); // Blank line between services
 
             grand_total_size += service_total_size; // Add to grand total
+            service_sizes.insert(service_name.clone(), service_total_size); // Store service total
         }
 
         // Format final output with header/footer
@@ -519,9 +522,10 @@ impl Files {
         final_text.insert(2, "".to_string()); // Blank line after header block
         final_text.push("=".repeat(header.len())); // Footer separator
 
-        (final_text.join("\n"), grand_total_size)
+        (final_text.join("\n"), grand_total_size, service_sizes)
     }
 
+    /// Generates the formatted duplicates report string.
     pub fn generate_duplicates_output(&self) -> String {
         if self.duplicates.is_empty() {
             return "No duplicate files found based on available hashes.".to_string();
@@ -540,17 +544,40 @@ impl Files {
         });
 
         let mut lines: Vec<String> = Vec::new();
-        lines.push("--- Duplicate Files Report ---".to_string());
+        // lines.push("--- Duplicate Files Report ---".to_string());
+
+        let mut total_potential_savings: u64 = 0;
+        let mut total_duplicate_size: u64 = 0; // Total size occupied by all duplicate files
+
+        for (_hashes, info) in &sorted_duplicates {
+            let num_files = info.paths.len();
+            if num_files > 1 { // Ensure it's actually a set of duplicates
+                let current_duplicate_set_total_size = info.size * num_files as u64;
+                let potential_saving = info.size * (num_files.saturating_sub(1)) as u64;
+                total_duplicate_size += current_duplicate_set_total_size;
+                total_potential_savings += potential_saving;
+            }
+        }
+
+        // Add summary information at the top
+        lines.push(format!(
+            "Total size occupied by all files identified as duplicates: {}",
+            human_bytes(total_duplicate_size as f64)
+        ));
         lines.push(format!(
             "Found {} sets of files with matching hashes.",
             sorted_duplicates.len()
         ));
-        let mut total_potential_savings: u64 = 0;
+        lines.push(format!(
+            "Total potential disk space saving by removing duplicates (keeping one copy of each): {}",
+             human_bytes(total_potential_savings as f64)
+        ));
+
 
         for (hashes, info) in sorted_duplicates {
             let num_duplicates = info.paths.len();
             let potential_saving = info.size * (num_duplicates.saturating_sub(1)) as u64;
-            total_potential_savings += potential_saving;
+
             lines.push(format!(
                 "\nDuplicates found with size: {} ({} files, potential saving: {})",
                 human_bytes(info.size as f64),
@@ -582,10 +609,8 @@ impl Files {
                 lines.push(format!("  Matching Hashes: {}", hash_parts.join(", ")));
             }
         }
-        // Add summary footer
-        lines.push("\n---".to_string());
-        lines.push(format!("Total potential disk space saving by removing duplicates (keeping one copy of each): {}", human_bytes(total_potential_savings as f64)));
-        lines.push("--- End of Report ---".to_string());
+        // Add summary footer (already included total potential savings at the top)
+        // lines.push("\n--- End of Report ---".to_string());
         lines.join("\n")
     }
 }
@@ -623,14 +648,36 @@ pub fn generate_reports(
         let _ = fs::remove_file(duplicates_output_path); // Clean up old report if exists
     }
 
-    // 3. Generate tree and size reports (using the new indentation logic internally)
-    let (tree_report_string, total_size) = files_data.generate_tree_output();
-    let size_report_string = format!(
+    // 3. Generate tree report string and get size info (per service and total)
+    let (tree_report_string, total_size, service_sizes) = files_data.generate_tree_output();
+
+    // 4. Format the size report string (with per-service breakdown)
+    let mut size_report_lines: Vec<String> = Vec::new();
+    // size_report_lines.push("--- Size Usage Report ---".to_string());
+
+    // Sort service names for consistent output
+    let mut sorted_service_names: Vec<&String> = service_sizes.keys().collect();
+    sorted_service_names.sort();
+
+    for service_name in sorted_service_names {
+        if let Some(size) = service_sizes.get(service_name) {
+            size_report_lines.push(format!(
+                "{}: {}",
+                service_name,
+                human_bytes(*size as f64)
+            ));
+        }
+    }
+    size_report_lines.push("".to_string()); // Separator
+    size_report_lines.push(format!(
         "Total size across all services: {}",
         human_bytes(total_size as f64)
-    );
+    ));
+    // size_report_lines.push("--- End of Report ---".to_string());
+    let size_report_string = size_report_lines.join("\n");
 
-    // 4. Write reports to disk
+
+    // 5. Write reports to disk
     fs::write(tree_output_path, &tree_report_string)?;
     println!("Tree report written to '{}'", tree_output_path);
     fs::write(size_output_path, &size_report_string)?;
