@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering; // Added for custom sorting
 use std::collections::{BTreeMap, HashMap, HashSet}; // Combined imports
 use std::fs;
+use std::io::{self, ErrorKind}; // Added for run_command errors
 use std::path::Path; // Added for writing files
+use std::process::{Command, Output, Stdio}; // Added for run_command
 
 // --- Data Structures ---
 #[derive(Serialize, Deserialize, Eq, Debug, Hash, Clone, Ord, PartialOrd, PartialEq)]
@@ -66,6 +68,17 @@ impl Ord for RawFile {
             })
             .then_with(|| self.path.cmp(&other.path))
     }
+}
+
+// Structure for deserializing `rclone about --json` output
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")] // Handles fields like "camelCase" if needed, though rclone uses lowercase
+struct RcloneAboutInfo {
+    total: Option<u64>,
+    used: Option<u64>,
+    trashed: Option<u64>,
+    other: Option<u64>,
+    free: Option<u64>,
 }
 
 fn get_name_and_extension(path: &str) -> (String, Option<String>) {
@@ -271,7 +284,7 @@ struct DuplicateInfo {
 pub struct Files {
     pub files: HashMap<String, File>,
     duplicates: BTreeMap<Hashes, DuplicateInfo>,
-    roots_by_service: HashMap<String, Vec<String>>,
+    pub roots_by_service: HashMap<String, Vec<String>>,
     hash_map: HashMap<Hashes, Vec<String>>,
 }
 
@@ -338,8 +351,8 @@ impl Files {
             .insert(service_name.to_string(), service_root_keys); // Store roots
 
         println!(
-            "Finished adding {} files for service: {}",
-            self.files.len(),
+            "Finished adding {} files for remote {}", // Note: self.files.len() is cumulative here
+            service_keys_added_this_run.len(),        // Print count for this run
             service_name
         );
     }
@@ -406,7 +419,8 @@ impl Files {
                     if let Some(file) = self.files.get(key) {
                         // Only consider actual files with non-negative size
                         if !file.is_dir && file.size >= 0 {
-                            let service_and_path = format!("{}:{}", file.service, file.path.join("/")); // Use colon separator for clarity
+                            let service_and_path =
+                                format!("{}:{}", file.service, file.path.join("/")); // Use colon separator for clarity
                             paths.push(service_and_path);
                             valid_files_found += 1;
 
@@ -551,7 +565,8 @@ impl Files {
 
         for (_hashes, info) in &sorted_duplicates {
             let num_files = info.paths.len();
-            if num_files > 1 { // Ensure it's actually a set of duplicates
+            if num_files > 1 {
+                // Ensure it's actually a set of duplicates
                 let current_duplicate_set_total_size = info.size * num_files as u64;
                 let potential_saving = info.size * (num_files.saturating_sub(1)) as u64;
                 total_duplicate_size += current_duplicate_set_total_size;
@@ -572,7 +587,6 @@ impl Files {
             "Total potential disk space saving by removing duplicates (keeping one copy of each): {}",
              human_bytes(total_potential_savings as f64)
         ));
-
 
         for (hashes, info) in sorted_duplicates {
             let num_duplicates = info.paths.len();
@@ -613,9 +627,56 @@ impl Files {
         // lines.push("\n--- End of Report ---".to_string());
         lines.join("\n")
     }
+
+    // Helper function to access roots_by_service keys
+    pub fn get_service_names(&self) -> Vec<String> {
+        self.roots_by_service.keys().cloned().collect()
+    }
 }
 
 // --- Public Functions ---
+
+// Helper to run a command
+pub fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
+    let args_display = args
+        .iter()
+        .map(|&a| {
+            if a.contains(' ') {
+                format!("\"{}\"", a)
+            } else {
+                a.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("> Running: {} {}", executable, args_display);
+    let output = Command::new(executable)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+    match output {
+        Ok(ref out) => {
+            if !out.status.success() {
+                eprintln!("  Command failed with status: {}", out.status);
+                let stderr_str = String::from_utf8_lossy(&out.stderr);
+                if !stderr_str.is_empty() {
+                    eprintln!("  stderr:\n---\n{}\n---", stderr_str.trim());
+                }
+            }
+        }
+        Err(ref e) => {
+            eprintln!("  Failed to execute command '{}': {}", executable, e);
+            if e.kind() == ErrorKind::NotFound {
+                eprintln!(
+                    "  Hint: Make sure '{}' is installed or the path is correct.",
+                    executable
+                );
+            }
+        }
+    }
+    output
+}
 
 /// Parses the JSON output from `rclone lsjson`.
 /// Returns a Vec of RawFile objects or a JSON parsing error.
@@ -624,7 +685,7 @@ pub fn parse_rclone_lsjson(json_data: &str) -> Result<Vec<RawFile>, serde_json::
 }
 
 /// Processes the aggregated file data, builds the tree, finds duplicates (if requested),
-/// and writes the output reports to disk.
+/// and writes the standard output reports (tree, duplicates, size_used) to disk.
 pub fn generate_reports(
     files_data: &mut Files,
     enable_duplicates_report: bool,
@@ -632,7 +693,7 @@ pub fn generate_reports(
     duplicates_output_path: &str,
     size_output_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Generating final reports...");
+    println!("Generating standard reports...");
 
     // 1. Build parent-child links
     files_data.build_tree();
@@ -645,15 +706,23 @@ pub fn generate_reports(
         println!("Duplicates report written to '{}'", duplicates_output_path);
     } else {
         println!("Duplicate detection skipped.");
-        let _ = fs::remove_file(duplicates_output_path); // Clean up old report if exists
+        // Optionally clean up old report if exists and skipping
+        if Path::new(duplicates_output_path).exists() {
+            let _ = fs::remove_file(duplicates_output_path);
+            println!(
+                "Removed existing duplicates report file '{}'",
+                duplicates_output_path
+            );
+        }
     }
 
     // 3. Generate tree report string and get size info (per service and total)
     let (tree_report_string, total_size, service_sizes) = files_data.generate_tree_output();
 
-    // 4. Format the size report string (with per-service breakdown)
+    // 4. Format the size report string (with per-service breakdown of *used* space)
     let mut size_report_lines: Vec<String> = Vec::new();
     // size_report_lines.push("--- Size Usage Report ---".to_string());
+    size_report_lines.push("".to_string()); // Blank line
 
     // Sort service names for consistent output
     let mut sorted_service_names: Vec<&String> = service_sizes.keys().collect();
@@ -662,7 +731,7 @@ pub fn generate_reports(
     for service_name in sorted_service_names {
         if let Some(size) = service_sizes.get(service_name) {
             size_report_lines.push(format!(
-                "{}: {}",
+                "{}: {} used", // Display only used size here
                 service_name,
                 human_bytes(*size as f64)
             ));
@@ -670,12 +739,11 @@ pub fn generate_reports(
     }
     size_report_lines.push("".to_string()); // Separator
     size_report_lines.push(format!(
-        "Total size across all services: {}",
+        "Total used size across all services (calculated from listings): {}", // Clarify source
         human_bytes(total_size as f64)
     ));
     // size_report_lines.push("--- End of Report ---".to_string());
     let size_report_string = size_report_lines.join("\n");
-
 
     // 5. Write reports to disk
     fs::write(tree_output_path, &tree_report_string)?;
@@ -683,6 +751,137 @@ pub fn generate_reports(
     fs::write(size_output_path, &size_report_string)?;
     println!("Size report written to '{}'", size_output_path);
 
-    println!("Reports generated successfully.");
+    println!("Standard reports generated successfully.");
+    Ok(())
+}
+
+/// Generates the 'about' report by running `rclone about` for each remote.
+pub fn generate_about_report(
+    remote_names: &[String], // Use slice of strings
+    rclone_executable: &str,
+    common_rclone_args: &[String], // Use slice of strings
+    about_output_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Generating about report (checking remote sizes)...");
+    let mut report_lines: Vec<(String, String)> = Vec::new(); // Store (name, formatted_line) for sorting
+
+    // Variables to accumulate totals
+    let mut grand_total_used: u64 = 0;
+    let mut grand_total_free: u64 = 0;
+    let mut grand_total_trashed: u64 = 0;
+    // grand_total_total might be misleading if remotes have different quotas or are unlimited
+    let mut remotes_with_data = 0; // Count remotes that successfully provided data
+
+    for remote_name in remote_names {
+        let remote_target = format!("{}:", remote_name);
+        let mut about_args_owned: Vec<String> = common_rclone_args.to_vec(); // Clone common args
+
+        about_args_owned.extend(vec![
+            "about".to_string(),
+            remote_target.clone(), // Add the specific remote
+            "--json".to_string(),
+        ]);
+
+        // Convert Vec<String> to Vec<&str> for run_command
+        let about_args_for_cmd: Vec<&str> = about_args_owned.iter().map(|s| s.as_str()).collect();
+
+        match run_command(rclone_executable, &about_args_for_cmd) {
+            Ok(output) => {
+                if output.status.success() {
+                    let json_string = String::from_utf8_lossy(&output.stdout);
+                    match serde_json::from_str::<RcloneAboutInfo>(&json_string) {
+                        Ok(about_info) => {
+                            remotes_with_data += 1; // Count successful data retrieval
+
+                            // Accumulate totals, handling Option<u64>
+                            grand_total_used += about_info.used.unwrap_or(0);
+                            grand_total_free += about_info.free.unwrap_or(0);
+                            grand_total_trashed += about_info.trashed.unwrap_or(0);
+
+                            let used_str = about_info
+                                .used
+                                .map_or_else(|| "N/A".to_string(), |v| human_bytes(v as f64));
+                            let total_str = about_info
+                                .total
+                                .map_or_else(|| "N/A".to_string(), |v| human_bytes(v as f64));
+                            let free_str = about_info
+                                .free
+                                .map_or_else(|| "N/A".to_string(), |v| human_bytes(v as f64));
+                            let trashed_str = about_info.trashed.filter(|&v| v > 0).map_or_else(
+                                || "".to_string(), // Don't show if zero or N/A
+                                |v| format!(", Trashed={}", human_bytes(v as f64)),
+                            );
+                            let other_str = about_info.other.filter(|&v| v > 0).map_or_else(
+                                || "".to_string(), // Don't show if zero or N/A
+                                |v| format!(", Other={}", human_bytes(v as f64)),
+                            );
+
+                            let line = format!(
+                                "{}: Used={}, Free={}, Total={}{}{}",
+                                remote_name, used_str, free_str, total_str, trashed_str, other_str
+                            );
+                            report_lines.push((remote_name.clone(), line));
+                        }
+                        Err(e) => {
+                            let line =
+                                format!("{}: Error parsing 'about' JSON - {}", remote_name, e);
+                            report_lines.push((remote_name.clone(), line));
+                            eprintln!(
+                                "  Failed to parse 'rclone about' JSON for {}: {}",
+                                remote_name, e
+                            );
+                        }
+                    }
+                } else {
+                    let line = format!(
+                        "{}: Failed to get 'about' info (Command failed with status {})",
+                        remote_name, output.status
+                    );
+                    report_lines.push((remote_name.clone(), line));
+                    // stderr already printed by run_command
+                }
+            }
+            Err(e) => {
+                let line = format!("{}: Failed to execute 'rclone about' - {}", remote_name, e);
+                report_lines.push((remote_name.clone(), line));
+                eprintln!(
+                    "  Failed to execute 'rclone about' for {}: {}",
+                    remote_name, e
+                );
+            }
+        }
+    }
+
+    // Sort lines alphabetically by remote name
+    report_lines.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Prepare final output string
+    let mut final_report_lines: Vec<String> = Vec::new();
+    final_report_lines.extend(report_lines.into_iter().map(|(_, line)| line)); // Extract just the formatted lines
+
+    // Add Grand Total line if any remotes reported data
+    if remotes_with_data > 0 {
+        final_report_lines.push("".to_string());
+        let grand_total_line = format!(
+            "Grand Total ({} remotes): Used={}, Free={}, Trashed={}, Total Capacity={}",
+            remotes_with_data,
+            human_bytes(grand_total_used as f64),
+            human_bytes(grand_total_free as f64),
+            human_bytes(grand_total_trashed as f64),
+            human_bytes((grand_total_used + grand_total_free) as f64),
+        );
+        final_report_lines.push(grand_total_line);
+    } else {
+        final_report_lines.push("".to_string());
+        final_report_lines.push("Grand Total: No data available from any remote.".to_string());
+    }
+
+    // final_report_lines.push("--- End of Report ---".to_string());
+
+    let final_report_string = final_report_lines.join("\n");
+
+    fs::write(about_output_path, final_report_string)?;
+    println!("About report written to '{}'", about_output_path);
+
     Ok(())
 }

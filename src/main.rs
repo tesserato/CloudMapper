@@ -2,15 +2,16 @@ use clap::Parser;
 use rayon::prelude::*;
 
 use std::fs;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind}; // Keep io imports if needed for main error handling
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+// std::process, Output, Stdio are no longer needed here as run_command moved
 use std::time::Instant;
 
 // --- Configuration Constants (Base Filenames) ---
 const TREE_OUTPUT_FILE_NAME: &str = "files.txt";
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
+const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt"; // New report filename
 // --- End Configuration Constants ---
 
 // --- Command Line Argument Definition ---
@@ -28,52 +29,17 @@ struct Args {
     /// Path to the directory for output reports
     #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = "./cloud")]
     output_path: String,
+
     /// Enable duplicate file detection report
     #[arg(long, short = 'd', default_value_t = true, env = "RCLONE_ANALYZER_DUPLICATES")]
     duplicates: bool,
+
+    /// Enable the 'rclone about' report for remote sizes
+    #[arg(long, short = 'a', default_value_t = true, env = "RCLONE_ANALYZER_ABOUT")]
+    about_report: bool, // New flag for the about report
 }
 
-// Helper to run a command
-fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
-    let args_display = args
-        .iter()
-        .map(|&a| {
-            if a.contains(' ') {
-                format!("\"{}\"", a)
-            } else {
-                a.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    println!("> Running: {} {}", executable, args_display);
-    let output = Command::new(executable)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
-    match output {
-        Ok(ref out) => {
-            if !out.status.success() {
-                eprintln!("  Command failed with status: {}", out.status);
-                let stderr_str = String::from_utf8_lossy(&out.stderr);
-                if !stderr_str.is_empty() {
-                    eprintln!("  stderr:\n---\n{}\n---", stderr_str.trim());
-                }
-            }
-        }
-        Err(ref e) => {
-            eprintln!("  Failed to execute command '{}': {}", executable, e);
-            if e.kind() == ErrorKind::NotFound {
-                eprintln!(
-                    "  Hint: Make sure '{}' is installed or the path is correct.",
-                    executable
-                );
-            }
-        }
-    }
-    output
-}
+// run_command moved to lib.rs
 
 // Define a type alias for the result of processing a single remote
 type RemoteProcessingResult = Result<(String, Vec<cloudmapper::RawFile>), (String, String)>;
@@ -92,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Output directory: {}", args.output_path);
     println!("Duplicates report enabled: {}", args.duplicates);
+    println!("About report enabled: {}", args.about_report); // Print status of new flag
 
     println!("Starting rclone data processing...");
     let overall_start_time = Instant::now();
@@ -116,11 +83,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut list_remotes_args_for_cmd: Vec<&str> = common_rclone_args
         .iter()
-        .map(|s| s.as_ref()) // Use as_ref()
+        .map(|s| s.as_str()) // Convert String to &str
         .collect();
     list_remotes_args_for_cmd.push("listremotes"); // Push &str
 
-    let remote_names: Vec<String> = match run_command(rclone_executable, &list_remotes_args_for_cmd)
+    // Use run_command from lib.rs
+    let remote_names: Vec<String> = match cloudmapper::run_command(rclone_executable, &list_remotes_args_for_cmd)
     {
         Ok(output) => {
             if !output.status.success() {
@@ -137,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect()
         }
         Err(e) => {
+             eprintln!("Error running '{} listremotes': {}", rclone_executable, e);
             return Err(Box::new(e));
         }
     };
@@ -150,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==========================================");
 
     // --- 3. Process Remotes in Parallel ---
-    println!("Processing remotes in parallel...");
+    println!("Processing remotes in parallel (running lsjson)...");
     let loop_start_time = Instant::now();
 
     // Use rayon's par_iter to map over remote names in parallel.
@@ -159,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .par_iter() // Create parallel iterator
         .map(|remote_name| {
             // This closure runs potentially in parallel for each remote_name
-            println!("  Starting processing for: {}", remote_name);
+            println!("  Starting lsjson for: {}", remote_name);
             let start = Instant::now();
 
             // Clone common args (which are Vec<String>) for this thread/task
@@ -180,14 +149,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Convert Vec<String> to Vec<&str> *just* for the run_command call
             let lsjson_args_for_cmd: Vec<&str> = lsjson_args_owned
                 .iter()
-                .map(|s| s.as_ref()) // Use as_ref()
+                .map(|s| s.as_str()) // Convert String to &str
                 .collect();
 
-            // Execute the command
-            match run_command(rclone_executable, &lsjson_args_for_cmd) {
-                // Pass Vec<&str>
+            // Execute the command using run_command from lib.rs
+            match cloudmapper::run_command(rclone_executable, &lsjson_args_for_cmd) {
                 Ok(output) => {
-                    // ... (rest of the match arm remains the same)
                     if output.status.success() {
                         let json_string = String::from_utf8_lossy(&output.stdout);
                         // Parse JSON
@@ -195,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Ok(raw_files) => {
                                 let duration = start.elapsed();
                                 println!(
-                                    "  Finished processing {} ({} items) in {:.2}s",
+                                    "  Finished lsjson for {} ({} items) in {:.2}s",
                                     remote_name,
                                     raw_files.len(),
                                     duration.as_secs_f32()
@@ -206,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(e) => {
                                 // JSON parsing error
                                 let err_msg = format!(
-                                    "Error parsing JSON for remote '{}': {}",
+                                    "Error parsing lsjson JSON for remote '{}': {}",
                                     remote_name, e
                                 );
                                 eprintln!("  {}", err_msg);
@@ -217,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         // rclone command failed
                         let err_msg = format!(
-                            "rclone command failed for remote '{}' with status {}",
+                            "rclone lsjson command failed for remote '{}' with status {}",
                             remote_name, output.status
                         );
                         // stderr already printed by run_command
@@ -229,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     // Failed to execute rclone command
                     let err_msg = format!(
-                        "Error executing rclone command for remote '{}': {}",
+                        "Error executing rclone lsjson command for remote '{}': {}",
                         remote_name, e
                     );
                     // stderr already printed by run_command
@@ -243,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let loop_duration = loop_start_time.elapsed();
     println!(
-        "Finished parallel processing phase in {:.2}s.",
+        "Finished parallel lsjson processing phase in {:.2}s.",
         loop_duration.as_secs_f32()
     );
     println!("==========================================");
@@ -269,6 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- 4. Generate Reports ( uses aggregated data) ---
+    let mut report_generation_error = false;
     if files_collection.files.is_empty() {
         if process_errors > 0 {
             println!(
@@ -278,18 +246,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // This case might mean listremotes worked but all lsjson calls failed before parsing
             println!("No data successfully processed from any remote. Skipping report generation.");
         } else {
-            println!("No files found across any successfully processed remotes. Skipping report generation.");
+            // This means lsjson ran successfully but found 0 files/dirs on any remote
+            println!("No files found across any successfully processed remotes. Skipping report generation (except potentially 'about' report).");
         }
-    } else {
-        println!("Generating final reports...");
-        let report_start_time = Instant::now();
+         // Still allow 'about' report to run even if no files found, as long as remotes exist
+        if args.about_report && !remote_names.is_empty() {
+             println!("Attempting to generate 'about' report...");
+             // Fall through to 'about' report generation below
+        } else {
+             return Ok(()); // Exit if no files and no about report requested/possible
+        }
 
-        // Construct full output paths using the provided directory
-        let output_dir = PathBuf::from(&args.output_path);
-        let tree_output_path = output_dir.join(TREE_OUTPUT_FILE_NAME);
-        let duplicates_output_path = output_dir.join(DUPLICATES_OUTPUT_FILE_NAME);
-        let size_output_path = output_dir.join(SIZE_OUTPUT_FILE_NAME);
+    }
 
+    // --- Generate Standard Reports ---
+    println!("Generating standard reports (tree, size_used, duplicates)...");
+    let report_start_time = Instant::now();
+
+    // Construct full output paths using the provided directory
+    let output_dir = PathBuf::from(&args.output_path);
+    let tree_output_path = output_dir.join(TREE_OUTPUT_FILE_NAME);
+    let duplicates_output_path = output_dir.join(DUPLICATES_OUTPUT_FILE_NAME);
+    let size_output_path = output_dir.join(SIZE_OUTPUT_FILE_NAME);
+
+    if !files_collection.files.is_empty() { // Only run standard reports if we have file data
         match cloudmapper::generate_reports(
             &mut files_collection,
             args.duplicates, // Pass CLI flag value
@@ -299,7 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             Ok(_) => {
                 println!(
-                    "Reports generated successfully in {:.2}s.",
+                    "Standard reports generated successfully in {:.2}s.",
                     report_start_time.elapsed().as_secs_f32()
                 );
                 println!("  Tree report: {}", tree_output_path.display());
@@ -309,11 +289,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(e) => {
-                eprintln!("Error generating final reports: {}", e);
-                process_errors += 1; // Count report generation failure as an error
+                eprintln!("Error generating standard reports: {}", e);
+                report_generation_error = true; // Mark error
             }
         }
     }
+
+
+    // --- Generate About Report (if enabled) ---
+    let mut about_report_error = false;
+    if args.about_report {
+         let about_report_start_time = Instant::now();
+         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
+         // Get the list of service names that were actually processed (from roots_by_service keys)
+         // or fall back to the original list if files_collection is empty but remotes were found
+         let services_to_query = if !files_collection.roots_by_service.is_empty() {
+             files_collection.get_service_names()
+         } else {
+             remote_names.clone() // Use the initial list if no files were processed
+         };
+
+         if !services_to_query.is_empty() {
+            match cloudmapper::generate_about_report(
+                &services_to_query, // Pass the list of services/remotes
+                rclone_executable,
+                &common_rclone_args, // Pass common args (like --config)
+                about_output_path.to_str().unwrap_or_default(),
+            ) {
+                Ok(_) => {
+                     println!(
+                        "'About' report generated successfully in {:.2}s.",
+                         about_report_start_time.elapsed().as_secs_f32()
+                    );
+                    println!("  About report: {}", about_output_path.display());
+                }
+                Err(e) => {
+                    eprintln!("Error generating 'about' report: {}", e);
+                    about_report_error = true; // Mark error
+                }
+            }
+         } else {
+             println!("Skipping 'about' report as no remotes were identified for querying.");
+              // Optionally clean up old report if exists and skipping
+             if about_output_path.exists() {
+                 let _ = fs::remove_file(&about_output_path);
+                 println!("Removed existing about report file '{}'", about_output_path.display());
+             }
+         }
+    } else {
+         println!("'About' report generation skipped by flag.");
+          // Optionally clean up old report if exists and skipping
+         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
+         if about_output_path.exists() {
+            let _ = fs::remove_file(&about_output_path);
+            println!("Removed existing about report file '{}'", about_output_path.display());
+         }
+    }
+
 
     // --- 5. Print Summary ---
     let total_duration = overall_start_time.elapsed();
@@ -322,14 +354,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Total time: {:.2}s", total_duration.as_secs_f32());
     println!("  Remotes found: {}", remote_names.len());
     println!(
-        "  Remotes processed successfully: {}",
+        "  Remotes processed successfully (lsjson): {}",
         remotes_processed_successfully
     );
-    println!("  Processing errors encountered: {}", process_errors);
+    // Consolidate error reporting
+    let total_errors = process_errors + if report_generation_error { 1 } else { 0 } + if about_report_error { 1 } else { 0 };
+    println!("  Processing/Reporting errors encountered: {}", total_errors);
     println!("==========================================");
 
-    if process_errors > 0 {
+    if total_errors > 0 {
         eprintln!("Completed with errors.");
+        // Decide if any error should result in a non-zero exit code
         return Err(Box::new(io::Error::new(
             ErrorKind::Other,
             "Processing completed with errors",
