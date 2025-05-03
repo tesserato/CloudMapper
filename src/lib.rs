@@ -1,5 +1,6 @@
 use human_bytes::human_bytes;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering; // Added for custom sorting
 use std::collections::{BTreeMap, HashMap, HashSet}; // Combined imports
 use std::fs;
 use std::path::Path; // Added io for potential errors // Added for writing files
@@ -72,7 +73,8 @@ impl PartialOrd for RawFile {
 
 impl Ord for RawFile {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Keep original sorting logic (Dirs first, then by path depth, then path string)
+        // Dirs first, then by path depth, then path string
+        // This sorting is used when processing raw files initially, not for the final tree output.
         self.is_dir
             .cmp(&other.is_dir)
             .reverse() // true (dir) comes before false (file)
@@ -133,7 +135,12 @@ impl File {
             if let Some(last) = final_path.last_mut() {
                 // Only update if the calculated name differs (safer)
                 if *last != name_part {
-                    *last = name_part;
+                    // If the last path component already contains the extension, use it as is.
+                    // Otherwise, use the calculated name part.
+                    // This handles cases where directory names might contain dots.
+                    if !last.ends_with(&format!(".{}", ext_opt.as_deref().unwrap_or(""))) {
+                        *last = name_part;
+                    }
                 }
             }
         }
@@ -152,8 +159,10 @@ impl File {
 
     // Generate a unique key for this file within the HashMap
     fn get_key(&self) -> String {
-        // Combine service and full path for uniqueness
-        // Using a separator unlikely to be in paths/service names
+        // Key needs to uniquely identify this node, considering service and path.
+        // For directories, path is enough. For files, add name+ext+size to disambiguate
+        // files with the same name but potentially different content/metadata at the same path level
+        // (though less common with rclone lsjson output structure).
         if self.is_dir {
             return format!("{}{}", self.service, self.path.join(""));
         } else {
@@ -170,11 +179,17 @@ impl File {
     // Generate the key for the potential parent directory
     fn get_parent_key(&self) -> Option<String> {
         if self.path.len() > 1 {
-            let parent_path = &self.path[..self.path.len() - 1];
-            Some(format!("{}{}", self.service, parent_path.join("")))
+            let parent_path_vec = &self.path[..self.path.len() - 1];
+            // Parent key must represent a directory, so use the directory key format
+            Some(format!("{}{}", self.service, parent_path_vec.join("")))
         } else {
             None // Root level file/dir in the service
         }
+    }
+
+    // Helper to get the display name (last path component)
+    fn get_display_name(&self) -> String {
+        self.path.last().cloned().unwrap_or_else(|| "/".to_string()) // Handle root case?
     }
 
     // Recursive function to format the output string and calculate total size
@@ -184,9 +199,9 @@ impl File {
         indent_size: usize,
         all_files: &HashMap<String, File>,
     ) -> (String, u64) {
-        let name = self.path.last().cloned().unwrap_or_else(|| "/".to_string()); // Handle root case?
+        let name = self.get_display_name();
         let indent = " ".repeat(indent_size * (self.path.len().saturating_sub(1)));
-        let starter = if self.is_dir { "📁" } else { "" }; // Folder icon for dirs
+        let starter = if self.is_dir { "📁" } else { "📄" }; // Use different icons for file/folder
         let dot_ext = if !self.is_dir && !self.ext.is_empty() {
             format!(".{}", self.ext)
         } else {
@@ -196,25 +211,55 @@ impl File {
         let mut total_size: u64 = if self.size >= 0 { self.size as u64 } else { 0 };
         let mut children_output = Vec::new();
 
-        // Sort children for consistent output
+        // Sort children: Folders first, then files, then alphabetically by name.
         let mut sorted_children_keys: Vec<&String> = self.children_keys.iter().collect();
-        sorted_children_keys.sort_by_key(|key| {
-            all_files
-                .get(*key)
-                .map_or("", |f| f.path.last().map_or("", |s| s.as_str()))
+        sorted_children_keys.sort_by(|a_key, b_key| {
+            let a_file = all_files.get(*a_key);
+            let b_file = all_files.get(*b_key);
+
+            match (a_file, b_file) {
+                (Some(a), Some(b)) => {
+                    // Primary sort: Directories first (is_dir: true comes before false)
+                    b.is_dir
+                        .cmp(&a.is_dir) // Reverse compare bools: true < false -> false > true
+                        .then_with(|| {
+                            // Secondary sort: Alphabetical by name
+                            a.get_display_name().cmp(&b.get_display_name())
+                        })
+                }
+                // Handle cases where a key might not be found (shouldn't happen ideally)
+                (None, Some(_)) => Ordering::Greater, // Place missing items last
+                (Some(_), None) => Ordering::Less,
+                (None, None) => Ordering::Equal,
+            }
         });
+        // --- END SORTING LOGIC CHANGE ---
 
         for key in sorted_children_keys {
             if let Some(child_file) = all_files.get(key) {
                 let (child_str, child_size) = child_file.format_tree_entry(indent_size, all_files);
                 children_output.push(child_str);
-                total_size += child_size;
+                // Only add child size if the current entry is a directory
+                if self.is_dir {
+                    total_size += child_size;
+                }
             } else {
                 eprintln!("Warning: Child key '{}' not found in file map.", key);
             }
         }
 
-        let size_str = human_bytes(total_size as f64);
+        // For directories, size shown is the sum of its contents.
+        // For files, size shown is its own size.
+        let display_size = if self.is_dir {
+            total_size
+        } else {
+            if self.size >= 0 {
+                self.size as u64
+            } else {
+                0
+            }
+        };
+        let size_str = human_bytes(display_size as f64);
         let modified_str = &self.modified; // Simplified display for now
 
         let children_str = children_output.join("\n");
@@ -227,7 +272,7 @@ impl File {
 
         (
             format!("{}{}{}", entry_str, line_sep, children_str),
-            total_size,
+            total_size, // Return the recursively calculated total size regardless of type for parent summation
         )
     }
 }
@@ -268,7 +313,7 @@ impl Files {
     /// Parses RawFile into File and stores them.
     pub fn add_remote_files(&mut self, service_name: &str, raw_files: Vec<RawFile>) {
         println!("Adding files for service: {}", service_name);
-        let mut service_root_keys = Vec::new();
+        let mut service_keys_added_this_run = HashSet::new(); // Track keys added in this call
 
         // Sort raw_files first - important for parent dirs likely appearing before children
         let mut sorted_raw_files = raw_files;
@@ -276,41 +321,51 @@ impl Files {
 
         for raw_file in sorted_raw_files {
             // Skip empty paths or names if they occur
-            if raw_file.path.is_empty() || raw_file.name.is_empty() {
-                eprintln!(
-                    "Warning: Skipping raw file with empty path/name: {:?}",
-                    raw_file
-                );
+            if raw_file.path.is_empty() {
+                eprintln!("Warning: Skipping raw file with empty path: {:?}", raw_file);
+                continue;
+            }
+            // Name can be empty for root dir sometimes, allow that if IsDir is true
+            if !raw_file.is_dir && raw_file.name.is_empty() {
+                eprintln!("Warning: Skipping raw file with empty name: {:?}", raw_file);
                 continue;
             }
 
             let file = File::from_raw(service_name.to_string(), &raw_file);
             let key = file.get_key();
 
-            // Store root keys
-            if file.get_parent_key().is_none() {
-                service_root_keys.push(key.clone());
-            }
-
-            // Add to hash map for duplicate checking
-            if let Some(hashes) = &file.hashes {
-                // Only consider files with hashes and non-negative size for duplicates
-                if file.size >= 0 {
-                    self.hash_map
-                        .entry(hashes.clone())
-                        .or_default()
-                        .push(key.clone());
+            // Add to hash map for duplicate checking (only non-dirs with hashes/size)
+            if !file.is_dir {
+                if let Some(hashes) = &file.hashes {
+                    if file.size >= 0 {
+                        // Only consider files with hashes and non-negative size
+                        self.hash_map
+                            .entry(hashes.clone())
+                            .or_default()
+                            .push(key.clone());
+                    }
                 }
             }
 
-            // Add the file itself
-            if self.files.insert(key.clone(), file).is_some() {
-                // This shouldn't happen if keys are generated correctly (service::path)
-                eprintln!("Warning: Overwriting existing file key: {}", key);
+            // Add the file itself, check for overwrites which might indicate key generation issues
+            if self.files.insert(key.clone(), file.clone()).is_some() {
+                // This might happen if duplicate listings exist in the input JSON for the exact same item
+                eprintln!("Warning: Overwriting existing file key (potential duplicate entry in source JSON): {}", key);
             }
+            service_keys_added_this_run.insert(key); // Track added key
         }
+
+        // Determine root keys *after* adding all files for the service
+        let service_root_keys: Vec<String> = service_keys_added_this_run
+            .iter()
+            .filter_map(|key| self.files.get(key)) // Get the actual file back
+            .filter(|file| file.get_parent_key().is_none()) // Check if it has no parent
+            .map(|file| file.get_key()) // Get its key
+            .collect();
+
         self.roots_by_service
             .insert(service_name.to_string(), service_root_keys);
+
         println!(
             "Finished adding {} files for service: {}",
             self.files.len(),
@@ -319,26 +374,37 @@ impl Files {
     }
 
     /// Builds the tree structure by linking parents and children
-    fn build_tree(&mut self) {
+    pub fn build_tree(&mut self) {
+        println!("Building tree structure...");
         let mut parent_child_map: HashMap<String, HashSet<String>> = HashMap::new();
 
-        // First pass: Collect all parent-child relationships
-        for (key, file) in &self.files {
-            if let Some(parent_key) = file.get_parent_key() {
-                // Check if parent exists before adding child
-                if self.files.contains_key(&parent_key) {
-                    parent_child_map
-                        .entry(parent_key)
-                        .or_default()
-                        .insert(key.clone());
-                } else {
-                    // This might happen if a parent directory wasn't listed by rclone lsjson for some reason
-                    // It might indicate an incomplete listing.
-                    // We can't reliably build the tree in this case for this file.
-                    eprintln!(
-                        "Warning: Parent key '{}' not found for file '{}'. File might be orphaned in tree view.",
-                        parent_key, key
-                    );
+        // First pass: Collect all parent-child relationships based on keys
+        let all_keys: Vec<String> = self.files.keys().cloned().collect();
+        for key in all_keys {
+            if let Some(file) = self.files.get(&key) {
+                if let Some(parent_key) = file.get_parent_key() {
+                    // Check if parent exists *as a directory* before adding child
+                    if let Some(parent_file) = self.files.get(&parent_key) {
+                        if parent_file.is_dir {
+                            parent_child_map
+                                .entry(parent_key)
+                                .or_default()
+                                .insert(key.clone());
+                        } else {
+                            // This could happen if key generation logic is flawed or source data is inconsistent
+                            eprintln!(
+                                "Warning: Potential parent key '{}' exists but is not marked as a directory. Cannot assign child '{}'.",
+                                parent_key, key
+                            );
+                        }
+                    } else {
+                        // This might happen if a parent directory wasn't listed by rclone lsjson
+                        // or if key generation for parent/child is inconsistent.
+                        eprintln!(
+                            "Warning: Parent key '{}' not found for file '{}'. File might be orphaned in tree view.",
+                            parent_key, key
+                        );
+                    }
                 }
             }
             // Root files don't have parents, handled by roots_by_service map
@@ -357,7 +423,7 @@ impl Files {
     }
 
     /// Finds duplicate files based on stored hashes.
-    fn find_duplicates(&mut self) {
+    pub fn find_duplicates(&mut self) {
         println!("Finding duplicates based on hashes...");
         self.duplicates.clear(); // Clear previous results if any
 
@@ -366,30 +432,39 @@ impl Files {
             if keys.len() > 1 {
                 let mut paths = Vec::new();
                 let mut size: Option<u64> = None;
+                let mut valid_files_found = 0;
 
                 for key in keys {
                     if let Some(file) = self.files.get(key) {
-                        // Use the full key (service::path) as the identifier
-                        paths.push(key.clone());
-                        // Store size (assume all files with same hash have same size)
-                        // Take the first valid size found.
-                        if size.is_none() && file.size >= 0 {
-                            size = Some(file.size as u64);
-                        } else if size.is_some() && file.size >= 0 && size != Some(file.size as u64)
-                        {
-                            // This would be unusual - same hash, different size reported by rclone?
-                            eprintln!(
-                                "Warning: Files with same hash {:?} have different sizes: {} vs {}",
-                                hash,
-                                size.unwrap(),
-                                file.size
-                            ); // FIXME
+                        // Ensure it's actually a file we're considering for duplicates
+                        if !file.is_dir && file.size >= 0 {
+                            // Use the full key (service::path/to/file.ext) as the identifier
+                            paths.push(key.clone());
+                            valid_files_found += 1;
+
+                            // Store size (assume all files with same hash have same size)
+                            // Take the first valid size found.
+                            if size.is_none() {
+                                size = Some(file.size as u64);
+                            } else if size != Some(file.size as u64) {
+                                // This would be unusual - same hash, different size reported by rclone?
+                                eprintln!(
+                                    "Warning: Files with same hash {:?} have different sizes reported: {} vs {} (Key: {})",
+                                    hash,
+                                    human_bytes(size.unwrap() as f64),
+                                    human_bytes(file.size as f64),
+                                    key
+                                );
+                                // FIXME Decide how to handle this - maybe skip this hash set? Or just report?
+                                // For now, we'll keep the first size found.
+                            }
                         }
                     }
                 }
 
-                // Only add if we found paths and a valid size
-                if !paths.is_empty() && size.is_some() {
+                // Only add if we found more than one valid file path and a valid size
+                if valid_files_found > 1 && size.is_some() {
+                    paths.sort(); // Sort paths for consistent output
                     self.duplicates.insert(
                         hash.clone(),
                         DuplicateInfo {
@@ -404,9 +479,9 @@ impl Files {
     }
 
     /// Generates the formatted tree string and total size
-    fn generate_tree_output(&self) -> (String, u64) {
+    pub fn generate_tree_output(&self) -> (String, u64) {
         let mut final_text: Vec<String> = Vec::new();
-        let mut total_size: u64 = 0;
+        let mut grand_total_size: u64 = 0;
 
         // Sort services alphabetically for consistent output
         let mut sorted_services: Vec<&String> = self.roots_by_service.keys().collect();
@@ -423,20 +498,36 @@ impl Files {
                 .cloned()
                 .unwrap_or_default();
 
-            // Sort root keys alphabetically for consistent output
+            // --- SORTING LOGIC FOR ROOTS ---
+            // Sort root keys: Folders first, then files, then alphabetically by name.
             let mut sorted_root_keys = root_keys;
-            sorted_root_keys.sort_by_key(|key| {
-                self.files
-                    .get(key)
-                    .map_or("", |f| f.path.last().map_or("", |s| s.as_str()))
+            sorted_root_keys.sort_by(|a_key, b_key| {
+                let a_file = self.files.get(a_key);
+                let b_file = self.files.get(b_key);
+                match (a_file, b_file) {
+                    (Some(a), Some(b)) => {
+                        // Primary sort: Directories first
+                        b.is_dir.cmp(&a.is_dir).then_with(|| {
+                            // Secondary sort: Alphabetical by name
+                            a.get_display_name().cmp(&b.get_display_name())
+                        })
+                    }
+                    (None, Some(_)) => Ordering::Greater,
+                    (Some(_), None) => Ordering::Less,
+                    (None, None) => Ordering::Equal,
+                }
             });
+            // --- END SORTING LOGIC FOR ROOTS ---
 
             for root_key in &sorted_root_keys {
                 if let Some(root_file) = self.files.get(root_key) {
                     // Start recursion from root files
-                    let (entry_str, entry_size) = root_file.format_tree_entry(2, &self.files); // Use indent size 2
+                    // Pass indent_size = 2 for tree-like structure under service name
+                    let (entry_str, entry_calculated_size) =
+                        root_file.format_tree_entry(2, &self.files);
                     service_entries.push(entry_str);
-                    service_total_size += entry_size;
+                    // Accumulate size from the top-level entries reported size
+                    service_total_size += entry_calculated_size;
                 } else {
                     eprintln!(
                         "Warning: Root key '{}' not found in file map for service '{}'.",
@@ -450,24 +541,24 @@ impl Files {
             final_text.push(format!(
                 "{} {}: {}",
                 service_prefix,
-                service_name, // Use the actual service name
-                human_bytes(service_total_size as f64)
+                service_name,                           // Use the actual service name
+                human_bytes(service_total_size as f64)  // Display sum calculated from roots
             ));
             final_text.extend(service_entries); // Add entries for this service
             final_text.push("".to_string()); // Add a blank line between services
 
-            total_size += service_total_size;
+            grand_total_size += service_total_size; // Add this service's total to the grand total
         }
 
         let header = format!(
             "Total size across all services: {}",
-            human_bytes(total_size as f64)
+            human_bytes(grand_total_size as f64)
         );
         final_text.insert(0, header.clone());
         final_text.insert(1, "=".repeat(header.len())); // Separator line
         final_text.push("=".repeat(header.len())); // Footer separator
 
-        (final_text.join("\n"), total_size)
+        (final_text.join("\n"), grand_total_size)
     }
 
     /// Generates the formatted duplicates string
@@ -480,47 +571,72 @@ impl Files {
         let mut sorted_duplicates: Vec<(&Hashes, &DuplicateInfo)> =
             self.duplicates.iter().collect();
         sorted_duplicates.sort_by(|a, b| {
-            let size_a = a.1.size * a.1.paths.len() as u64;
-            let size_b = b.1.size * b.1.paths.len() as u64;
-            size_b.cmp(&size_a) // Descending order
+            // Sort primarily by potential wasted space (size * (num_files - 1)) descending
+            let wasted_a = a.1.size * (a.1.paths.len().saturating_sub(1)) as u64;
+            let wasted_b = b.1.size * (b.1.paths.len().saturating_sub(1)) as u64;
+            wasted_b
+                .cmp(&wasted_a) // Descending order of wasted space
+                .then_with(|| b.1.size.cmp(&a.1.size)) // Then by size descending
+                .then_with(|| b.1.paths.len().cmp(&a.1.paths.len())) // Then by number of files descending
         });
 
         let mut lines: Vec<String> = Vec::new();
         lines.push("--- Duplicate Files Report ---".to_string());
+        lines.push(format!(
+            "Found {} sets of files with matching hashes.",
+            sorted_duplicates.len()
+        ));
+
+        let mut total_potential_savings: u64 = 0;
 
         for (hashes, info) in sorted_duplicates {
+            let num_duplicates = info.paths.len();
+            let potential_saving = info.size * (num_duplicates.saturating_sub(1)) as u64;
+            total_potential_savings += potential_saving;
+
             lines.push(format!(
-                "\nDuplicates found with size: {} ({} files)",
+                "\nDuplicates found with size: {} ({} files, potential saving: {})",
                 human_bytes(info.size as f64),
-                info.paths.len()
+                num_duplicates,
+                human_bytes(potential_saving as f64)
             ));
 
             // List paths associated with this hash
             for path_key in &info.paths {
-                // Path key is already service::path/to/file
+                // Path key is already service::path/to/file.ext format from get_key()
+                // Attempt to resolve the key back to a file to display name/path nicely if needed,
+                // but the key itself is the unique identifier here.
                 lines.push(format!("  - {}", path_key));
             }
 
-            // List the hashes that matched
-            lines.push("  Matching Hashes:".to_string());
+            // List the hashes that matched (only non-None ones)
+            let mut hash_parts = Vec::new();
             if let Some(h) = &hashes.md5 {
-                lines.push(format!("    MD5: {}", h));
+                hash_parts.push(format!("MD5: {}", h));
             }
             if let Some(h) = &hashes.sha1 {
-                lines.push(format!("    SHA-1: {}", h));
+                hash_parts.push(format!("SHA-1: {}", h));
             }
             if let Some(h) = &hashes.sha256 {
-                lines.push(format!("    SHA-256: {}", h));
+                hash_parts.push(format!("SHA-256: {}", h));
             }
             if let Some(h) = &hashes.dropbox {
-                lines.push(format!("    DropboxHash: {}", h));
+                hash_parts.push(format!("DropboxHash: {}", h));
             }
             if let Some(h) = &hashes.quickxor {
-                lines.push(format!("    QuickXorHash: {}", h));
+                hash_parts.push(format!("QuickXorHash: {}", h));
             }
-            // Add others if needed
+            if !hash_parts.is_empty() {
+                lines.push(format!("  Matching Hashes: {}", hash_parts.join(", ")));
+            }
         }
-        lines.push("\n--- End of Report ---".to_string());
+
+        lines.push("\n---".to_string());
+        lines.push(format!(
+            "Total potential disk space saving by removing duplicates (keeping one copy of each): {}",
+            human_bytes(total_potential_savings as f64)
+        ));
+        lines.push("--- End of Report ---".to_string());
         lines.join("\n")
     }
 }
@@ -544,23 +660,10 @@ pub fn generate_reports(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Generating final reports...");
 
-    // 1. Build the internal tree structure
-    files_data.build_tree();
+    // 1. Build the internal tree structure (links parents/children)
+    files_data.build_tree(); // Call this *before* generating reports
 
-    // 2. Generate Tree Report String and get total size
-    let (tree_report_string, total_size) = files_data.generate_tree_output();
-    let size_report_string = format!(
-        "Total size across all services: {}",
-        human_bytes(total_size as f64)
-    );
-
-    // 3. Write Tree Report and Size Report
-    fs::write(tree_output_path, &tree_report_string)?;
-    println!("Tree report written to '{}'", tree_output_path);
-    fs::write(size_output_path, &size_report_string)?;
-    println!("Size report written to '{}'", size_output_path);
-
-    // 4. Generate and Write Duplicates Report (if enabled)
+    // 2. Find Duplicates (if enabled, do this *before* tree output if you want info available)
     if enable_duplicates_report {
         files_data.find_duplicates(); // Find duplicates based on collected hashes
         let duplicates_report_string = files_data.generate_duplicates_output();
@@ -571,6 +674,20 @@ pub fn generate_reports(
         // Optionally delete the old duplicates file if it exists
         let _ = fs::remove_file(duplicates_output_path); // Ignore error if file doesn't exist
     }
+
+    // 3. Generate Tree Report String and get total size
+    // This now uses the built tree and applies folder-first sorting during generation
+    let (tree_report_string, total_size) = files_data.generate_tree_output();
+    let size_report_string = format!(
+        "Total size across all services: {}",
+        human_bytes(total_size as f64)
+    );
+
+    // 4. Write Tree Report and Size Report
+    fs::write(tree_output_path, &tree_report_string)?;
+    println!("Tree report written to '{}'", tree_output_path);
+    fs::write(size_output_path, &size_report_string)?;
+    println!("Size report written to '{}'", size_output_path);
 
     println!("Reports generated successfully.");
     Ok(())
