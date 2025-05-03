@@ -1,11 +1,8 @@
-// lib.rs
-
-// Keep necessary imports
 use human_bytes::human_bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet}; // Combined imports
-use std::path::Path;
-use std::{fs, io}; // Added io for potential errors // Added for writing files
+use std::fs;
+use std::path::Path; // Added io for potential errors // Added for writing files
 
 // --- Data Structures ---
 // (Mostly unchanged, ensure necessary ones are public if accessed from main.rs)
@@ -109,7 +106,6 @@ pub struct File {
     size: i64,                      // Keep as i64 to handle potential -1 from rclone
     is_dir: bool,                   // Store if it's a directory explicitly
     children_keys: HashSet<String>, // Keys of direct children
-    // Add hashes if needed for duplicate checking directly on File struct later
     hashes: Option<Hashes>,
 }
 
@@ -158,14 +154,24 @@ impl File {
     fn get_key(&self) -> String {
         // Combine service and full path for uniqueness
         // Using a separator unlikely to be in paths/service names
-        format!("{}::{}", self.service, self.path.join("/"))
+        if self.is_dir {
+            return format!("{}{}", self.service, self.path.join(""));
+        } else {
+            format!(
+                "{}{}{}{}",
+                self.service,
+                self.path.join(""),
+                self.ext,
+                self.size
+            )
+        }
     }
 
     // Generate the key for the potential parent directory
     fn get_parent_key(&self) -> Option<String> {
         if self.path.len() > 1 {
             let parent_path = &self.path[..self.path.len() - 1];
-            Some(format!("{}::{}", self.service, parent_path.join("/")))
+            Some(format!("{}{}", self.service, parent_path.join("")))
         } else {
             None // Root level file/dir in the service
         }
@@ -190,7 +196,7 @@ impl File {
         let mut total_size: u64 = if self.size >= 0 { self.size as u64 } else { 0 };
         let mut children_output = Vec::new();
 
-        // Sort children for consistent output (optional, but nice)
+        // Sort children for consistent output
         let mut sorted_children_keys: Vec<&String> = self.children_keys.iter().collect();
         sorted_children_keys.sort_by_key(|key| {
             all_files

@@ -1,10 +1,8 @@
-mod lib;
-
 use clap::Parser;
 use rayon::prelude::*;
 
 use std::fs;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::Instant;
@@ -29,7 +27,7 @@ struct Args {
     rclone_config: Option<String>,
 
     /// Path to the directory for output reports
-    #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = ".")]
+    #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = "./cloud")]
     output_path: String,
     /// Enable duplicate file detection report
     #[arg(long, short = 'd', default_value_t = true)] // Or false if default off
@@ -79,7 +77,7 @@ fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
 }
 
 // Define a type alias for the result of processing a single remote
-type RemoteProcessingResult = Result<(String, Vec<lib::RawFile>), (String, String)>;
+type RemoteProcessingResult = Result<(String, Vec<cloudmapper::RawFile>), (String, String)>;
 //                             Ok(remote_name, files)      Err(remote_name, error_message)
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -104,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output directory '{}' ensured.", &args.output_path);
 
     // --- 1. Initialize Files container from lib ---
-    let mut files_collection = lib::Files::new();
+    let mut files_collection = cloudmapper::Files::new();
 
     // --- 2. Get List of Remotes ---
     println!("Fetching list of rclone remotes...");
@@ -190,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if output.status.success() {
                         let json_string = String::from_utf8_lossy(&output.stdout);
                         // Parse JSON
-                        match lib::parse_rclone_lsjson(&json_string) {
+                        match cloudmapper::parse_rclone_lsjson(&json_string) {
                             Ok(raw_files) => {
                                 let duration = start.elapsed();
                                 println!(
@@ -289,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let duplicates_output_path = output_dir.join(DUPLICATES_OUTPUT_FILE_NAME);
         let size_output_path = output_dir.join(SIZE_OUTPUT_FILE_NAME);
 
-        match lib::generate_reports(
+        match cloudmapper::generate_reports(
             &mut files_collection,
             args.duplicates,
             tree_output_path.to_str().unwrap_or_default(), // Convert PathBuf to &str
