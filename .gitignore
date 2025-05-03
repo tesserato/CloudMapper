@@ -1,3 +1,5 @@
 ﻿target
 rclone_json_output
 cloud
+codebase.md
+excluded_paths.txt
