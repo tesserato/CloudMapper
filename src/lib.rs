@@ -203,25 +203,25 @@ impl File {
         let indent = " ".repeat(indent_size * self.path.len());
 
         let starter = if self.is_dir { "📁" } else { "📄" }; // Icons
-        // let dot_ext = if !self.is_dir && !self.ext.is_empty() {
-        //     format!(".{}", self.ext)
-        // } else {
-        //     "".to_string()
-        // };
+                                                             // let dot_ext = if !self.is_dir && !self.ext.is_empty() {
+                                                             //     format!(".{}", self.ext)
+                                                             // } else {
+                                                             //     "".to_string()
+                                                             // };
 
         // Calculate size (recursive sum for dirs, own size for files)
         let mut total_size: u64 = if self.size >= 0 { self.size as u64 } else { 0 };
         let mut children_output = Vec::new();
 
-        // Sort children: Folders first, then files, then alphabetically.
+        // Sort children: Files first, then folders, then alphabetically.
         let mut sorted_children_keys: Vec<&String> = self.children_keys.iter().collect();
         sorted_children_keys.sort_by(|a_key, b_key| {
             match (all_files.get(*a_key), all_files.get(*b_key)) {
-                (Some(a), Some(b)) => b
-                    .is_dir
-                    .cmp(&a.is_dir) // Dirs first
+                (Some(a), Some(b)) => a
+                    .is_dir // Sort by is_dir ascending (false=file, true=dir)
+                    .cmp(&b.is_dir) // Files (false) come before Dirs (true)
                     .then_with(|| a.get_display_name().cmp(&b.get_display_name())), // Then alpha
-                (None, Some(_)) => Ordering::Greater,
+                (None, Some(_)) => Ordering::Greater, // Handle missing keys (shouldn't happen ideally)
                 (Some(_), None) => Ordering::Less,
                 (None, None) => Ordering::Equal,
             }
@@ -480,14 +480,14 @@ impl Files {
                 .cloned()
                 .unwrap_or_default();
 
-            // Sort root keys (dirs first, then alpha)
+            // Sort root keys: Files first, then Folders, then alphabetically
             let mut sorted_root_keys = root_keys;
             sorted_root_keys.sort_by(|a_key, b_key| {
                 match (self.files.get(a_key), self.files.get(b_key)) {
-                    (Some(a), Some(b)) => b
-                        .is_dir
-                        .cmp(&a.is_dir)
-                        .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                    (Some(a), Some(b)) => a
+                        .is_dir // Sort by is_dir ascending (false=file, true=dir)
+                        .cmp(&b.is_dir) // Files (false) come before Dirs (true)
+                        .then_with(|| a.get_display_name().cmp(&b.get_display_name())), // Then alpha
                     (None, Some(_)) => Ordering::Greater,
                     (Some(_), None) => Ordering::Less,
                     (None, None) => Ordering::Equal,
@@ -807,15 +807,18 @@ pub fn generate_about_report(
                             let free_str = about_info
                                 .free
                                 .map_or_else(|| "N/A".to_string(), |v| human_bytes(v as f64));
+                            // Conditional formatting for trashed size
                             let trashed_str = about_info.trashed.filter(|&v| v > 0).map_or_else(
                                 || "".to_string(), // Don't show if zero or N/A
                                 |v| format!(", Trashed={}", human_bytes(v as f64)),
                             );
+                            // Conditional formatting for other size (less common)
                             let other_str = about_info.other.filter(|&v| v > 0).map_or_else(
                                 || "".to_string(), // Don't show if zero or N/A
                                 |v| format!(", Other={}", human_bytes(v as f64)),
                             );
 
+                            // Format the line for the specific remote including conditional trashed/other
                             let line = format!(
                                 "{}: Used={}, Free={}, Total={}{}{}",
                                 remote_name, used_str, free_str, total_str, trashed_str, other_str
