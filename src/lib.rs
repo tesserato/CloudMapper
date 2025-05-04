@@ -8,16 +8,18 @@ use std::io::{self, ErrorKind}; // Added for run_command errors
 use std::path::Path; // Added for writing files, PathBuf for directory manipulation
 use std::process::{Command, Output, Stdio}; // Added for run_command
 
+const MODE_REMOTES_SERVICE_PREFIX: &str = "_";
+
 // Import the enum defined in main.rs - requires main.rs to define it publicly or pass instances
 // For simplicity, let's assume main.rs passes an instance of its enum.
 // We'll refer to it conceptually as OutputDivisionMode here.
 // Alternatively, define a matching enum here. Let's define it here to keep lib self-contained conceptually.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 #[value(rename_all = "kebab-case")] // Use kebab-case for CLI args (e.g., --output-division single)
-pub enum OutputDivisionMode {
+pub enum OutputMode {
     Single,
-    Remote,
-    Folder,
+    Remotes,
+    Folders,
 }
 
 // --- Data Structures ---
@@ -736,7 +738,7 @@ impl Files {
     }
 
     /// Generates the formatted tree string for a single service.
-    /// Used for OutputDivisionMode::Remote.
+    /// Used for `OutputMode::Remote`.
     /// Returns: (Formatted Tree String for the service, Calculated Total Size for the service)
     fn generate_service_tree_string(
         &self,
@@ -963,7 +965,7 @@ pub fn parse_rclone_lsjson(json_data: &str) -> Result<Vec<RawFile>, serde_json::
 /// and writes the reports (tree/files, duplicates, size_used) to disk based on the chosen mode.
 pub fn generate_reports(
     files_data: &mut Files,
-    output_division_mode: OutputDivisionMode, // New parameter
+    output_division_mode: OutputMode, // New parameter
     enable_duplicates_report: bool,
     output_dir: &Path,        // Changed from tree_output_path to directory path
     tree_base_filename: &str, // Base name for single file mode, e.g., "files.txt"
@@ -1037,7 +1039,7 @@ pub fn generate_reports(
 
     // --- 5. Generate Tree/File Structure Report based on Mode ---
     match output_division_mode {
-        OutputDivisionMode::Single => {
+        OutputMode::Single => {
             let tree_report_string = files_data.generate_full_tree_string(
                 folder_icon,
                 file_icon,
@@ -1053,7 +1055,7 @@ pub fn generate_reports(
                 tree_output_file_path.display()
             );
         }
-        OutputDivisionMode::Remote => {
+        OutputMode::Remotes => {
             // Regenerate sizes map if needed, though we have it from `calculate_all_sizes`
             let mut sorted_services: Vec<String> = files_data.get_service_names(); // Use helper
             sorted_services.sort();
@@ -1072,7 +1074,7 @@ pub fn generate_reports(
 
                 // Construct filename like "output_dir/remote_name.txt"
                 // Sanitize service_name if necessary, but assume ok for now
-                let service_filename = format!("{}.txt", service_name);
+                let service_filename = format!("{MODE_REMOTES_SERVICE_PREFIX}{service_name}.txt");
                 let service_output_path = output_dir.join(service_filename);
                 // fs::create_dir_all(&service_output_path.parent().unwrap())?; // Ensure output dir exists (already done)
                 fs::write(&service_output_path, service_string)?;
@@ -1087,7 +1089,7 @@ pub fn generate_reports(
                 output_dir.display()
             );
         }
-        OutputDivisionMode::Folder => {
+        OutputMode::Folders => {
             let mut sorted_services: Vec<String> = files_data.get_service_names();
             sorted_services.sort();
 

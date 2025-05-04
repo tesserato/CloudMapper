@@ -1,5 +1,4 @@
-// src/main.rs
-use clap::{Parser, ValueEnum}; // Import ValueEnum
+use clap::Parser;
 use rayon::prelude::*;
 
 use std::fs;
@@ -8,11 +7,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 // Use the enum from lib.rs
-use cloudmapper::OutputDivisionMode;
+use cloudmapper::OutputMode;
 
 // --- Configuration Constants (Base Filenames) ---
-// Keep these as base names, generate_reports will join with output_dir
-const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used only in Single mode and as content filename in Folder mode
+const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used  in Single mode and as content filename in Folder mode
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
 const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
@@ -23,83 +21,61 @@ const FILE_ICON: &str = "📄";
 const SIZE_ICON: &str = "💽";
 const DATE_ICON: &str = "📆";
 
-// --- Enum for Output Division Mode (used by Clap) ---
-// #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-// #[value(rename_all = "kebab-case")] // Use kebab-case for CLI args (e.g., --output-division single)
-// enum CliOutputDivisionMode {
-//     /// Output all remotes into a single file (files.txt)
-//     Single,
-//     /// Output each remote's file list into its own file (<remote_name>.txt)
-//     Remote,
-//     /// Output files by creating a directory structure mirroring the remote
-//     Folder,
-// }
-
-// // Map CLI enum to internal lib enum
-// impl From<CliOutputDivisionMode> for OutputDivisionMode {
-//     fn from(cli_mode: CliOutputDivisionMode) -> Self {
-//         match cli_mode {
-//             CliOutputDivisionMode::Single => OutputDivisionMode::Single,
-//             CliOutputDivisionMode::Remote => OutputDivisionMode::Remote,
-//             CliOutputDivisionMode::Folder => OutputDivisionMode::Folder,
-//         }
-//     }
-// }
-
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Path to the rclone executable (optional)
+    /// Path to a rclone executable (optional). If not provided, Rclone from PATH variable will be used.
     #[arg(long, short = 'r', env = "RCLONE_EXECUTABLE")]
     rclone_path: Option<String>,
 
-    /// Path to the rclone config file (optional)
+    /// Path to a rclone config file (optional). If not provided, global configuration will be used.
     #[arg(long, short = 'c', env = "RCLONE_CONFIG")]
     rclone_config: Option<String>,
 
-    /// Path to the directory for output reports
+    /// Path to the directory where the reports will be saved.
     #[arg(
         long,
         short = 'o',
-        env = "RCLONE_ANALYZER_OUTPUT",
+        env = "CM_OUTPUT",
         default_value = "./cloud"
     )]
     output_path: String,
 
-    /// How to divide the file listing output
+    /// How to divide the outputs.
     #[arg(
         long,
+        short = 'm',
         value_enum, // Use clap's value_enum feature
-        default_value_t = OutputDivisionMode::Folder, // Default to folder structure
-        env = "RCLONE_ANALYZER_OUTPUT_DIVISION"
+        default_value_t = OutputMode::Folders, // Default to folder structure
+        env = "CM_OUTPUT_MODE"
     )]
-    output_division: OutputDivisionMode,
+    output_mode: OutputMode,
 
-    /// Enable duplicate file detection report
+    /// Enable duplicate file detection report.
     #[arg(
         long,
         short = 'd',
         default_value_t = true,
-        env = "RCLONE_ANALYZER_DUPLICATES"
+        env = "CM_DUPLICATES"
     )]
     duplicates: bool,
 
-    /// Enable the 'rclone about' report for remote sizes
+    /// Enable the 'rclone about' report for remote sizes.
     #[arg(
         long,
         short = 'a',
         default_value_t = true,
-        env = "RCLONE_ANALYZER_ABOUT"
+        env = "CM_ABOUT"
     )]
     about_report: bool,
 
-    /// Clean the output directory before generating reports
+    /// Clean the output directory before generating reports.
     #[arg(
         long,
-        short = 'C', // Capital C for Clean
+        short = 'k',
         default_value_t = true,
-        env = "RCLONE_ANALYZER_CLEAN_OUTPUT"
+        env = "CM_CLEAN_OUTPUT"
     )]
     clean_output: bool,
 }
@@ -120,16 +96,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Using rclone config: {}", conf);
     }
     println!("Output directory: {}", args.output_path);
-    println!("Output division mode: {:?}", args.output_division); // Print new flag
+    println!("Output mode: {:?}", args.output_mode);
     println!("Clean output directory: {}", args.clean_output);
     println!("Duplicates report enabled: {}", args.duplicates);
-    println!("About report enabled: {}", args.about_report);
+    println!("About report enabled: {}\n", args.about_report);
 
     println!("Starting rclone data processing...");
     let overall_start_time = Instant::now();
 
     // --- Create/Clean Output Directory ---
-    let output_dir = PathBuf::from(&args.output_path); // Store as PathBuf
+    let output_dir = PathBuf::from(&args.output_path);
     if args.clean_output && output_dir.exists() {
         println!("Cleaning output directory '{}'...", output_dir.display());
         fs::remove_dir_all(&output_dir)?;
@@ -193,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==========================================");
 
     // --- 3. Process Remotes in Parallel ---
-    println!("Processing remotes in parallel (running lsjson)...");
+    println!("Processing remotes in parallel");
     let loop_start_time = Instant::now();
 
     // Use rayon's par_iter to map over remote names in parallel.
@@ -337,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let report_start_time = Instant::now();
 
         // Convert the CLI enum variant to the lib's enum variant
-        let output_division_mode_lib: OutputDivisionMode = args.output_division.into();
+        let output_division_mode_lib: OutputMode = args.output_mode.into();
 
         match cloudmapper::generate_reports(
             &mut files_collection,
@@ -361,13 +337,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 // Adjust success message based on mode
                 match output_division_mode_lib {
-                    OutputDivisionMode::Single => {
+                    OutputMode::Single => {
                         println!(
                             "  File list report: {}",
                             output_dir.join(TREE_OUTPUT_FILE_NAME).display()
                         );
                     }
-                    OutputDivisionMode::Remote | OutputDivisionMode::Folder => {
+                    OutputMode::Remotes | OutputMode::Folders => {
                         println!(
                             "  File list/structure output generated in: {}",
                             output_dir.display()
