@@ -21,6 +21,8 @@ const FILE_ICON: &str = "📄";
 const SIZE_ICON: &str = "💽";
 const DATE_ICON: &str = "📆";
 
+const SECTION_SEPARATOR: &str = "=============================================";
+
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -34,12 +36,7 @@ struct Args {
     rclone_config: Option<String>,
 
     /// Path to the directory where the reports will be saved.
-    #[arg(
-        long,
-        short = 'o',
-        env = "CM_OUTPUT",
-        default_value = "./cloud"
-    )]
+    #[arg(long, short = 'o', env = "CM_OUTPUT", default_value = "./cloud")]
     output_path: String,
 
     /// How to divide the outputs.
@@ -53,30 +50,15 @@ struct Args {
     output_mode: OutputMode,
 
     /// Enable duplicate file detection report.
-    #[arg(
-        long,
-        short = 'd',
-        default_value_t = true,
-        env = "CM_DUPLICATES"
-    )]
+    #[arg(long, short = 'd', default_value_t = true, env = "CM_DUPLICATES")]
     duplicates: bool,
 
     /// Enable the 'rclone about' report for remote sizes.
-    #[arg(
-        long,
-        short = 'a',
-        default_value_t = true,
-        env = "CM_ABOUT"
-    )]
+    #[arg(long, short = 'a', default_value_t = true, env = "CM_ABOUT")]
     about_report: bool,
 
     /// Clean the output directory before generating reports.
-    #[arg(
-        long,
-        short = 'k',
-        default_value_t = true,
-        env = "CM_CLEAN_OUTPUT"
-    )]
+    #[arg(long, short = 'k', default_value_t = true, env = "CM_CLEAN_OUTPUT")]
     clean_output: bool,
 }
 
@@ -99,7 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output mode: {:?}", args.output_mode);
     println!("Clean output directory: {}", args.clean_output);
     println!("Duplicates report enabled: {}", args.duplicates);
-    println!("About report enabled: {}\n", args.about_report);
+    println!("About report enabled: {}", args.about_report);
+    println!("{SECTION_SEPARATOR}");
 
     println!("Starting rclone data processing...");
     let overall_start_time = Instant::now();
@@ -166,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("Found {} remotes: {:?}", remote_names.len(), remote_names);
-    println!("==========================================");
+    println!();
 
     // --- 3. Process Remotes in Parallel ---
     println!("Processing remotes in parallel");
@@ -263,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Finished parallel lsjson processing phase in {:.2}s.",
         loop_duration.as_secs_f32()
     );
-    println!("==========================================");
+    println!("{SECTION_SEPARATOR}");
     println!("Aggregating results...");
 
     // --- 3b. Aggregate Results Sequentially ---
@@ -425,7 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- 5. Print Summary ---
     let total_duration = overall_start_time.elapsed();
-    println!("==========================================");
+    println!("{SECTION_SEPARATOR}");
     println!("Processing Summary:");
     println!("  Total time: {:.2}s", total_duration.as_secs_f32());
     println!("  Remotes found: {}", remote_names.len());
@@ -441,7 +424,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  Processing/Reporting errors encountered: {}",
         total_errors
     );
-    println!("==========================================");
+    println!("{SECTION_SEPARATOR}");
 
     if total_errors > 0 {
         eprintln!("Completed with errors.");

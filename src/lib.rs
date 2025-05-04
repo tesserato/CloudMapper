@@ -1074,7 +1074,7 @@ pub fn generate_reports(
 
                 // Construct filename like "output_dir/remote_name.txt"
                 // Sanitize service_name if necessary, but assume ok for now
-                let service_filename = format!("{MODE_REMOTES_SERVICE_PREFIX}{service_name} {tree_base_filename}.txt");
+                let service_filename = format!("{MODE_REMOTES_SERVICE_PREFIX}{service_name} {tree_base_filename}");
                 let service_output_path = output_dir.join(service_filename);
                 // fs::create_dir_all(&service_output_path.parent().unwrap())?; // Ensure output dir exists (already done)
                 fs::write(&service_output_path, service_string)?;
