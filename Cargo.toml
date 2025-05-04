@@ -11,3 +11,10 @@ serde_json = "1.0" # For parsing JSON strings in lib.rs
 human_bytes = "0.4" # For human-readable sizes in lib.rs
 clap = { version = "4.4", features = ["derive", "env"] }
 rayon = "1.10.0"
+
+[profile.release]
+opt-level = 3       # Default for release, ensures maximum optimization level from the compiler. Explicitly setting it doesn't hurt.
+lto = "fat"        # Enable "fat" Link-Time Optimization. Default is `false`.
+codegen-units = 1   # Reduces parallelism during code generation, potentially allowing LLVM to perform better optimizations across the entire crate. Increases compile time. Default is usually 16 or higher.
+panic = "abort"     # Changes behavior on panic: program aborts immediately instead of unwinding the stack. Can result in smaller binaries and potentially faster code (no unwinding overhead), BUT prevents destructors (~Drop implementations) from running during a panic. Use with caution if cleanup during panic is essential. Default is "unwind".
+strip = true      # Optional: Removes debug symbols from the binary, significantly reducing its size. Doesn't directly affect runtime speed but smaller binaries load faster. Recommended for final distribution. Default is `false`.
