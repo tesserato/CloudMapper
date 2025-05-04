@@ -1,4 +1,5 @@
-use clap::Parser;
+// src/main.rs
+use clap::{Parser, ValueEnum}; // Import ValueEnum
 use rayon::prelude::*;
 
 use std::fs;
@@ -6,8 +7,12 @@ use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 use std::time::Instant;
 
+// Use the enum from lib.rs
+use cloudmapper::OutputDivisionMode;
+
 // --- Configuration Constants (Base Filenames) ---
-const TREE_OUTPUT_FILE_NAME: &str = "files.txt";
+// Keep these as base names, generate_reports will join with output_dir
+const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used only in Single mode
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
 const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
@@ -17,6 +22,30 @@ const FOLDER_ICON: &str = "📁";
 const FILE_ICON: &str = "📄";
 const SIZE_ICON: &str = "💽";
 const DATE_ICON: &str = "📆";
+
+// --- Enum for Output Division Mode (used by Clap) ---
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")] // Use kebab-case for CLI args (e.g., --output-division single)
+enum CliOutputDivisionMode {
+    /// Output all remotes into a single file (files.txt)
+    Single,
+    /// Output each remote's file list into its own file (<remote_name>.txt)
+    Remote,
+    /// Output files by creating a directory structure mirroring the remote
+    Folder,
+}
+
+// Map CLI enum to internal lib enum
+impl From<CliOutputDivisionMode> for OutputDivisionMode {
+    fn from(cli_mode: CliOutputDivisionMode) -> Self {
+        match cli_mode {
+            CliOutputDivisionMode::Single => OutputDivisionMode::Single,
+            CliOutputDivisionMode::Remote => OutputDivisionMode::Remote,
+            CliOutputDivisionMode::Folder => OutputDivisionMode::Folder,
+        }
+    }
+}
+
 
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
@@ -39,6 +68,15 @@ struct Args {
     )]
     output_path: String,
 
+    /// How to divide the file listing output
+    #[arg(
+        long,
+        value_enum, // Use clap's value_enum feature
+        default_value_t = CliOutputDivisionMode::Folder, // Default to single file
+        env = "RCLONE_ANALYZER_OUTPUT_DIVISION"
+    )]
+    output_division: CliOutputDivisionMode,
+
     /// Enable duplicate file detection report
     #[arg(
         long,
@@ -55,7 +93,7 @@ struct Args {
         default_value_t = true,
         env = "RCLONE_ANALYZER_ABOUT"
     )]
-    about_report: bool, // New flag for the about report
+    about_report: bool,
 }
 
 // Define a type alias for the result of processing a single remote
@@ -74,16 +112,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Using rclone config: {}", conf);
     }
     println!("Output directory: {}", args.output_path);
+    println!("Output division mode: {:?}", args.output_division); // Print new flag
     println!("Duplicates report enabled: {}", args.duplicates);
-    println!("About report enabled: {}", args.about_report); // Print status of new flag
+    println!("About report enabled: {}", args.about_report);
 
     println!("Starting rclone data processing...");
     let overall_start_time = Instant::now();
 
     // --- Create Output Directory ---
     // Ensure the output directory exists, create it if not.
-    fs::create_dir_all(&args.output_path)?;
-    println!("Output directory '{}' ensured.", &args.output_path);
+    let output_dir = PathBuf::from(&args.output_path); // Store as PathBuf
+    fs::create_dir_all(&output_dir)?;
+    println!("Output directory '{}' ensured.", output_dir.display());
 
     // --- 1. Initialize Files container from lib ---
     let mut files_collection = cloudmapper::Files::new();
@@ -276,23 +316,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- Generate Standard Reports ---
-    println!("Generating standard reports (tree, size_used, duplicates)...");
+    println!("Generating standard reports (tree/files, size_used, duplicates)...");
     let report_start_time = Instant::now();
 
-    // Construct full output paths using the provided directory
-    let output_dir = PathBuf::from(&args.output_path);
-    let tree_output_path = output_dir.join(TREE_OUTPUT_FILE_NAME);
-    let duplicates_output_path = output_dir.join(DUPLICATES_OUTPUT_FILE_NAME);
-    let size_output_path = output_dir.join(SIZE_OUTPUT_FILE_NAME);
+    // Convert the CLI enum variant to the lib's enum variant
+    let output_division_mode_lib: OutputDivisionMode = args.output_division.into();
 
     if !files_collection.files.is_empty() {
         // Only run standard reports if we have file data
         match cloudmapper::generate_reports(
             &mut files_collection,
-            args.duplicates,                               // Pass CLI flag value
-            tree_output_path.to_str().unwrap_or_default(), // Convert PathBuf to &str
-            duplicates_output_path.to_str().unwrap_or_default(),
-            size_output_path.to_str().unwrap_or_default(),
+            output_division_mode_lib, // Pass chosen division mode
+            args.duplicates,
+            &output_dir, // Pass the output directory PathBuf
+            TREE_OUTPUT_FILE_NAME, // Pass base name, lib constructs full path if needed
+            DUPLICATES_OUTPUT_FILE_NAME,
+            SIZE_OUTPUT_FILE_NAME,
             FOLDER_ICON,
             FILE_ICON,
             SIZE_ICON,
@@ -304,11 +343,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "Standard reports generated successfully in {:.2}s.",
                     report_start_time.elapsed().as_secs_f32()
                 );
-                println!("  Tree report: {}", tree_output_path.display());
-                println!("  Size report: {}", size_output_path.display());
+                // Adjust success message based on mode
+                match output_division_mode_lib {
+                     OutputDivisionMode::Single => {
+                         println!("  Tree report: {}", output_dir.join(TREE_OUTPUT_FILE_NAME).display());
+                     },
+                     OutputDivisionMode::Remote | OutputDivisionMode::Folder => {
+                         println!("  File list/structure output: {}", output_dir.display());
+                     }
+                }
+                println!("  Size report: {}", output_dir.join(SIZE_OUTPUT_FILE_NAME).display());
                 if args.duplicates {
-                    // Check CLI flag again for printing message
-                    println!("  Duplicates report: {}", duplicates_output_path.display());
+                    println!("  Duplicates report: {}", output_dir.join(DUPLICATES_OUTPUT_FILE_NAME).display());
                 }
             }
             Err(e) => {
@@ -322,6 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut about_report_error = false;
     if args.about_report {
         let about_report_start_time = Instant::now();
+        // Construct full path for the about report
         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
         // Get the list of service names that were actually processed (from roots_by_service keys)
         // or fall back to the original list if files_collection is empty but remotes were found
@@ -336,7 +383,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &services_to_query, // Pass the list of services/remotes
                 rclone_executable,
                 &common_rclone_args, // Pass common args (like --config)
-                about_output_path.to_str().unwrap_or_default(),
+                // Pass path as &str
+                about_output_path.to_str().unwrap_or_else(|| {
+                    eprintln!("Warning: Could not convert about output path to string.");
+                    "" // Provide a default empty string if conversion fails
+                }),
             ) {
                 Ok(_) => {
                     println!(

@@ -4,8 +4,19 @@ use std::cmp::Ordering; // Added for custom sorting
 use std::collections::{BTreeMap, HashMap, HashSet}; // Combined imports
 use std::fs;
 use std::io::{self, ErrorKind}; // Added for run_command errors
-use std::path::Path; // Added for writing files
+use std::path::Path; // Added for writing files, PathBuf for directory manipulation
 use std::process::{Command, Output, Stdio}; // Added for run_command
+
+// Import the enum defined in main.rs - requires main.rs to define it publicly or pass instances
+// For simplicity, let's assume main.rs passes an instance of its enum.
+// We'll refer to it conceptually as OutputDivisionMode here.
+// Alternatively, define a matching enum here. Let's define it here to keep lib self-contained conceptually.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputDivisionMode {
+    Single,
+    Remote,
+    Folder,
+}
 
 // --- Data Structures ---
 #[derive(Serialize, Deserialize, Eq, Debug, Hash, Clone, Ord, PartialOrd, PartialEq)]
@@ -189,6 +200,7 @@ impl File {
 
     // --- format_tree_entry ---
     // Recursive function to format the output string and calculate total size
+    // This is used for Single and Remote output modes.
     fn format_tree_entry(
         &self,
         indent_size: usize, // Spaces per level (e.g., 2)
@@ -275,6 +287,126 @@ impl File {
             format!("{}{}{}", entry_str, line_sep, children_str),
             total_size, // Return calculated total size (relevant for parent dirs)
         )
+    }
+
+    // Helper to calculate total size recursively without formatting strings
+    fn calculate_recursive_size(&self, all_files: &HashMap<String, File>) -> u64 {
+        if !self.is_dir {
+            if self.size >= 0 {
+                self.size as u64
+            } else {
+                0
+            }
+        } else {
+            let mut total_size: u64 = 0; // Dirs themselves often have 0 or -1 size
+            for key in &self.children_keys {
+                if let Some(child_file) = all_files.get(key) {
+                    total_size += child_file.calculate_recursive_size(all_files);
+                }
+            }
+            total_size
+        }
+    }
+
+    /// Helper function to format a list of direct children for Folder mode.
+    fn format_direct_children_list(
+        &self, // The parent File object (must be a directory)
+        all_files: &HashMap<String, File>,
+        folder_icon: &str,
+        file_icon: &str,
+        size_icon: &str,
+        date_icon: &str,
+    ) -> String {
+        let mut children_lines = Vec::new();
+
+        // Sort children: Files first, then folders, then alphabetically.
+        let mut sorted_children_keys: Vec<&String> = self.children_keys.iter().collect();
+        sorted_children_keys.sort_by(|a_key, b_key| {
+            match (all_files.get(*a_key), all_files.get(*b_key)) {
+                (Some(a), Some(b)) => a
+                    .is_dir
+                    .cmp(&b.is_dir)
+                    .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (None, None) => Ordering::Equal,
+            }
+        });
+
+        for key in sorted_children_keys {
+            if let Some(child_file) = all_files.get(key) {
+                let name = child_file.get_display_name();
+                let starter = if child_file.is_dir {
+                    folder_icon
+                } else {
+                    file_icon
+                };
+
+                // Calculate size (recursive for child dirs, own size for files) for display
+                let display_size = child_file.calculate_recursive_size(all_files);
+                let size_str = human_bytes(display_size as f64);
+                let modified_str = &child_file.modified;
+
+                // Format: Indent level 1, Icon, Name, Size, Date
+                let line = format!(
+                    "  {} {} {size_icon} {} {date_icon} {}",
+                    starter, name, size_str, modified_str
+                );
+                children_lines.push(line);
+            }
+        }
+        children_lines.join("\n")
+    }
+
+    /// Recursively writes directory structure and content files for Folder mode.
+    fn write_fs_node_recursive(
+        &self, // The File object for the current node (file or dir)
+        parent_fs_path: &Path,
+        all_files: &HashMap<String, File>,
+        folder_icon: &str,
+        file_icon: &str,
+        size_icon: &str,
+        date_icon: &str,
+    ) -> io::Result<()> {
+        if !self.is_dir {
+            // Files are handled when their parent directory calls this function for its children.
+            return Ok(());
+        }
+
+        // It's a directory, create it on the filesystem
+        let current_fs_path = parent_fs_path.join(self.get_display_name());
+        fs::create_dir_all(&current_fs_path)?;
+
+        // Generate the content list for the _contents.txt file in this directory
+        let contents_string = self.format_direct_children_list(
+            all_files,
+            folder_icon,
+            file_icon,
+            size_icon,
+            date_icon,
+        );
+
+        // Write the _contents.txt file
+        let contents_file_path = current_fs_path.join("files.txt");
+        fs::write(&contents_file_path, contents_string)?;
+
+        // Recursively call for child directories
+        for child_key in &self.children_keys {
+            if let Some(child_file) = all_files.get(child_key) {
+                // Only recurse if the child is a directory itself
+                if child_file.is_dir {
+                    child_file.write_fs_node_recursive(
+                        parent_fs_path, // The newly created directory is the parent for the next level
+                        all_files,
+                        folder_icon,
+                        file_icon,
+                        size_icon,
+                        date_icon,
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -465,27 +597,52 @@ impl Files {
         println!("Found {} sets of duplicate files.", self.duplicates.len());
     }
 
-    /// Generates the formatted tree string, total size, and per-service sizes.
-    /// Returns: (Tree String, Grand Total Size, Map<ServiceName, ServiceTotalSize>)
-    pub fn generate_tree_output(
+    /// Calculates the total size and size per service.
+    /// Returns: (Grand Total Size, Map<ServiceName, ServiceTotalSize>)
+    fn calculate_all_sizes(&self) -> (u64, HashMap<String, u64>) {
+        let mut grand_total_size: u64 = 0;
+        let mut service_sizes: HashMap<String, u64> = HashMap::new();
+
+        for service_name in self.roots_by_service.keys() {
+            let mut service_total_size: u64 = 0;
+            let root_keys = self
+                .roots_by_service
+                .get(service_name)
+                .cloned()
+                .unwrap_or_default();
+
+            for root_key in &root_keys {
+                if let Some(root_file) = self.files.get(root_key) {
+                    // Use the recursive size calculation helper
+                    service_total_size += root_file.calculate_recursive_size(&self.files);
+                }
+            }
+            grand_total_size += service_total_size;
+            service_sizes.insert(service_name.clone(), service_total_size);
+        }
+        (grand_total_size, service_sizes)
+    }
+
+    /// Generates the formatted tree string for all services combined.
+    /// Returns: Formatted Tree String
+    fn generate_full_tree_string(
         &self,
         folder_icon: &str,
         file_icon: &str,
         size_icon: &str,
         date_icon: &str,
         remote_icon: &str,
-    ) -> (String, u64, HashMap<String, u64>) {
+        service_sizes: &HashMap<String, u64>, // Pass in calculated sizes
+    ) -> String {
         let mut final_text: Vec<String> = Vec::new();
-        let mut grand_total_size: u64 = 0;
-        let mut service_sizes: HashMap<String, u64> = HashMap::new(); // To store size per service
 
         // Sort services alphabetically
         let mut sorted_services: Vec<&String> = self.roots_by_service.keys().collect();
         sorted_services.sort();
 
         for service_name in sorted_services {
-            let mut service_total_size: u64 = 0;
-            let mut service_entries_lines: Vec<String> = Vec::new(); // Collect lines for this service
+            let service_total_size = service_sizes.get(service_name).cloned().unwrap_or(0);
+            let mut service_entries_lines: Vec<String> = Vec::new();
 
             let root_keys = self
                 .roots_by_service
@@ -507,11 +664,13 @@ impl Files {
                 }
             });
 
-            // Generate tree strings for each root
+            // Generate tree strings for each root using format_tree_entry
             for root_key in &sorted_root_keys {
                 if let Some(root_file) = self.files.get(root_key) {
-                    let indent_size_per_level = 2; // Define indent size (e.g., 2 spaces)
-                    let (entry_str, entry_calculated_size) = root_file.format_tree_entry(
+                    let indent_size_per_level = 2;
+                    // format_tree_entry calculates its own subtree size, but we ignore it here
+                    // as we already have the total service size.
+                    let (entry_str, _) = root_file.format_tree_entry(
                         indent_size_per_level,
                         &self.files,
                         folder_icon,
@@ -519,8 +678,7 @@ impl Files {
                         size_icon,
                         date_icon,
                     );
-                    service_entries_lines.push(entry_str); // Add the formatted string
-                    service_total_size += entry_calculated_size; // Accumulate size for this service
+                    service_entries_lines.push(entry_str);
                 } else {
                     eprintln!(
                         "Warning: Root key '{}' not found for service '{}'.",
@@ -530,7 +688,6 @@ impl Files {
             }
 
             // Add service header (no indent)
-            // let service_prefix = "➡️";
             final_text.push(format!(
                 "{} {}: {}",
                 remote_icon,
@@ -540,22 +697,78 @@ impl Files {
             // Add the collected (and now correctly indented) tree lines
             final_text.push(service_entries_lines.join("\n"));
             final_text.push("".to_string()); // Blank line between services
-
-            grand_total_size += service_total_size; // Add to grand total
-            service_sizes.insert(service_name.clone(), service_total_size); // Store service total
         }
 
-        // Format final output with header/footer
-        // let header = format!(
-        //     "Total size across all services: {}",
-        //     human_bytes(grand_total_size as f64)
-        // );
-        // final_text.insert(0, header.clone());
-        // final_text.insert(1, "=".repeat(header.len()));
-        // final_text.insert(2, "".to_string()); // Blank line after header block
-        // final_text.push("=".repeat(header.len())); // Footer separator
+        final_text.join("\n")
+    }
 
-        (final_text.join("\n"), grand_total_size, service_sizes)
+    /// Generates the formatted tree string for a single service.
+    /// Used for OutputDivisionMode::Remote.
+    /// Returns: (Formatted Tree String for the service, Calculated Total Size for the service)
+    fn generate_service_tree_string(
+        &self,
+        service_name: &str,
+        folder_icon: &str,
+        file_icon: &str,
+        size_icon: &str,
+        date_icon: &str,
+        remote_icon: &str,
+    ) -> (String, u64) {
+        let mut service_total_size: u64 = 0;
+        let mut service_entries_lines: Vec<String> = Vec::new();
+
+        let root_keys = self
+            .roots_by_service
+            .get(service_name)
+            .cloned()
+            .unwrap_or_default();
+
+        // Sort root keys: Files first, then Folders, then alphabetically
+        let mut sorted_root_keys = root_keys;
+        sorted_root_keys.sort_by(|a_key, b_key| {
+            match (self.files.get(a_key), self.files.get(b_key)) {
+                (Some(a), Some(b)) => a
+                    .is_dir
+                    .cmp(&b.is_dir)
+                    .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (None, None) => Ordering::Equal,
+            }
+        });
+
+        // Generate tree strings for each root using format_tree_entry
+        for root_key in &sorted_root_keys {
+            if let Some(root_file) = self.files.get(root_key) {
+                let indent_size_per_level = 2;
+                let (entry_str, entry_calculated_size) = root_file.format_tree_entry(
+                    indent_size_per_level,
+                    &self.files,
+                    folder_icon,
+                    file_icon,
+                    size_icon,
+                    date_icon,
+                );
+                service_entries_lines.push(entry_str);
+                service_total_size += entry_calculated_size; // Accumulate size
+            } else {
+                eprintln!(
+                    "Warning: Root key '{}' not found for service '{}'.",
+                    root_key, service_name
+                );
+            }
+        }
+
+        // Format the final string for this service
+        let header = format!(
+            "{} {}: {}",
+            remote_icon,
+            service_name,
+            human_bytes(service_total_size as f64)
+        );
+        let body = service_entries_lines.join("\n");
+
+        (format!("{}\n{}", header, body), service_total_size)
     }
 
     /// Generates the formatted duplicates report string.
@@ -704,59 +917,70 @@ pub fn parse_rclone_lsjson(json_data: &str) -> Result<Vec<RawFile>, serde_json::
 }
 
 /// Processes the aggregated file data, builds the tree, finds duplicates (if requested),
-/// and writes the standard output reports (tree, duplicates, size_used) to disk.
+/// and writes the reports (tree/files, duplicates, size_used) to disk based on the chosen mode.
 pub fn generate_reports(
     files_data: &mut Files,
+    output_division_mode: OutputDivisionMode, // New parameter
     enable_duplicates_report: bool,
-    tree_output_path: &str,
-    duplicates_output_path: &str,
-    size_output_path: &str,
+    output_dir: &Path,        // Changed from tree_output_path to directory path
+    tree_base_filename: &str, // Base name for single file mode, e.g., "files.txt"
+    duplicates_output_filename: &str,
+    size_output_filename: &str,
     folder_icon: &str,
     file_icon: &str,
     size_icon: &str,
     date_icon: &str,
     remote_icon: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Generating standard reports...");
+    println!(
+        "Generating standard reports (Mode: {:?})...",
+        output_division_mode
+    );
 
-    // 1. Build parent-child links
+    // Ensure output directory exists (should be created by main, but double-check)
+    fs::remove_dir_all(output_dir)?;
+    fs::create_dir_all(output_dir)?;
+
+    // --- 1. Build parent-child links ---
     files_data.build_tree();
 
-    // 2. Find and report duplicates (if enabled)
-    if enable_duplicates_report {
+    // --- 2. Find and report duplicates (if enabled) ---
+    // Duplicates report is always a single file.
+    let duplicates_output_path = output_dir.join(duplicates_output_filename);
+    if enable_duplicates_report { // TODO run this in parallel
         files_data.find_duplicates();
         let duplicates_report_string = files_data.generate_duplicates_output();
-        fs::write(duplicates_output_path, duplicates_report_string)?;
-        println!("Duplicates report written to '{}'", duplicates_output_path);
+        fs::write(&duplicates_output_path, duplicates_report_string)?;
+        println!(
+            "Duplicates report written to '{}'",
+            duplicates_output_path.display()
+        );
     } else {
         println!("Duplicate detection skipped.");
-        // Optionally clean up old report if exists and skipping
-        if Path::new(duplicates_output_path).exists() {
-            let _ = fs::remove_file(duplicates_output_path);
+        if duplicates_output_path.exists() {
+            let _ = fs::remove_file(&duplicates_output_path);
             println!(
                 "Removed existing duplicates report file '{}'",
-                duplicates_output_path
+                duplicates_output_path.display()
             );
         }
     }
 
-    // 3. Generate tree report string and get size info (per service and total)
-    let (tree_report_string, total_size, service_sizes) =
-        files_data.generate_tree_output(folder_icon, file_icon, size_icon, date_icon, remote_icon);
+    // --- 3. Calculate sizes (needed for reports) ---
+    let (grand_total_size, service_sizes) = files_data.calculate_all_sizes();
 
-    // 4. Format the size report string (with per-service breakdown of *used* space)
+    // --- 4. Generate Size Report (always a single file) ---
+    let size_output_path = output_dir.join(size_output_filename);
     let mut size_report_lines: Vec<String> = Vec::new();
-    // size_report_lines.push("--- Size Usage Report ---".to_string());
     size_report_lines.push("".to_string()); // Blank line
 
-    // Sort service names for consistent output
     let mut sorted_service_names: Vec<&String> = service_sizes.keys().collect();
     sorted_service_names.sort();
 
     for service_name in sorted_service_names {
         if let Some(size) = service_sizes.get(service_name) {
             size_report_lines.push(format!(
-                "{}: {} used", // Display only used size here
+                "{}: {} used",
                 service_name,
                 human_bytes(*size as f64)
             ));
@@ -764,19 +988,103 @@ pub fn generate_reports(
     }
     size_report_lines.push("".to_string()); // Separator
     size_report_lines.push(format!(
-        "Total used size across all services (calculated from listings): {}", // Clarify source
-        human_bytes(total_size as f64)
+        "Total used size across all services (calculated from listings): {}",
+        human_bytes(grand_total_size as f64)
     ));
-    // size_report_lines.push("--- End of Report ---".to_string());
     let size_report_string = size_report_lines.join("\n");
+    fs::write(&size_output_path, &size_report_string)?;
+    println!("Size report written to '{}'", size_output_path.display());
 
-    // 5. Write reports to disk
-    fs::write(tree_output_path, &tree_report_string)?;
-    println!("Tree report written to '{}'", tree_output_path);
-    fs::write(size_output_path, &size_report_string)?;
-    println!("Size report written to '{}'", size_output_path);
+    // --- 5. Generate Tree/File Structure Report based on Mode ---
+    match output_division_mode {
+        OutputDivisionMode::Single => {
+            let tree_report_string = files_data.generate_full_tree_string(
+                folder_icon,
+                file_icon,
+                size_icon,
+                date_icon,
+                remote_icon,
+                &service_sizes,
+            );
+            let tree_output_file_path = output_dir.join(tree_base_filename);
+            fs::write(&tree_output_file_path, &tree_report_string)?;
+            println!(
+                "Tree report (single file) written to '{}'",
+                tree_output_file_path.display()
+            );
+        }
+        OutputDivisionMode::Remote => {
+            // Regenerate sizes map if needed, though we have it from `calculate_all_sizes`
+            let mut sorted_services: Vec<&String> = files_data.roots_by_service.keys().collect();
+            sorted_services.sort();
 
-    println!("Standard reports generated successfully.");
+            for service_name in sorted_services {
+                // Generate string and size just for this service
+                let (service_string, _service_calculated_size) = files_data
+                    .generate_service_tree_string(
+                        service_name,
+                        folder_icon,
+                        file_icon,
+                        size_icon,
+                        date_icon,
+                        remote_icon,
+                    );
+
+                // Construct filename like "output_dir/remote_name.txt"
+                let service_filename = format!("{}.txt", service_name);
+                let service_output_path = output_dir.join(service_filename);
+                fs::create_dir_all(&service_output_path)?;
+                fs::write(&service_output_path, service_string)?;
+                println!(
+                    "  - Remote file list written to '{}'",
+                    service_output_path.display()
+                );
+            }
+            println!(
+                "Tree report (per remote) written to directory '{}'",
+                output_dir.display()
+            );
+        }
+        OutputDivisionMode::Folder => {
+            let mut sorted_services: Vec<&String> = files_data.roots_by_service.keys().collect();
+            sorted_services.sort();
+
+            for service_name in sorted_services {
+                let service_base_path = output_dir.join(service_name);
+                // No need to create dir here, write_fs_node_recursive handles it for roots too
+
+                let root_keys = files_data
+                    .roots_by_service
+                    .get(service_name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                for root_key in &root_keys {
+                    if let Some(root_file) = files_data.files.get(root_key) {
+                        // The initial parent path is the service's base directory
+                        root_file.write_fs_node_recursive(
+                            &service_base_path.parent().unwrap_or(output_dir), // Pass parent dir
+                            &files_data.files,
+                            folder_icon,
+                            file_icon,
+                            size_icon,
+                            date_icon,
+                        )?;
+                    }
+                }
+                println!(
+                    "  - Folder structure for remote '{}' written.",
+                    service_name
+                );
+            }
+            println!(
+                "Tree report (folder structure) written to directory '{}'",
+                output_dir.display()
+            );
+        }
+    }
+
+    println!("Standard reports generation finished.");
     Ok(())
 }
 
