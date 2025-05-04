@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use human_bytes::human_bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering; // Added for custom sorting
@@ -11,7 +12,8 @@ use std::process::{Command, Output, Stdio}; // Added for run_command
 // For simplicity, let's assume main.rs passes an instance of its enum.
 // We'll refer to it conceptually as OutputDivisionMode here.
 // Alternatively, define a matching enum here. Let's define it here to keep lib self-contained conceptually.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")] // Use kebab-case for CLI args (e.g., --output-division single)
 pub enum OutputDivisionMode {
     Single,
     Remote,
@@ -221,7 +223,7 @@ impl File {
         // We want root items (depth 1) to have 0 indent relative to the service header,
         // their children (depth 2) to have indent_size * 1, etc.
         // So, use (depth - 1) * indent_size.
-        let indent_level = self.path.len().saturating_sub(1); // Depth 1 -> 0, Depth 2 -> 1
+        let indent_level = self.path.len(); // Depth 1 -> 0, Depth 2 -> 1
         let indent = " ".repeat(indent_size * indent_level);
 
         let starter = if self.is_dir { folder_icon } else { file_icon }; // Icons

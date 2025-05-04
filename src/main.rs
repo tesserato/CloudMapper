@@ -24,27 +24,27 @@ const SIZE_ICON: &str = "💽";
 const DATE_ICON: &str = "📆";
 
 // --- Enum for Output Division Mode (used by Clap) ---
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-#[value(rename_all = "kebab-case")] // Use kebab-case for CLI args (e.g., --output-division single)
-enum CliOutputDivisionMode {
-    /// Output all remotes into a single file (files.txt)
-    Single,
-    /// Output each remote's file list into its own file (<remote_name>.txt)
-    Remote,
-    /// Output files by creating a directory structure mirroring the remote
-    Folder,
-}
+// #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+// #[value(rename_all = "kebab-case")] // Use kebab-case for CLI args (e.g., --output-division single)
+// enum CliOutputDivisionMode {
+//     /// Output all remotes into a single file (files.txt)
+//     Single,
+//     /// Output each remote's file list into its own file (<remote_name>.txt)
+//     Remote,
+//     /// Output files by creating a directory structure mirroring the remote
+//     Folder,
+// }
 
-// Map CLI enum to internal lib enum
-impl From<CliOutputDivisionMode> for OutputDivisionMode {
-    fn from(cli_mode: CliOutputDivisionMode) -> Self {
-        match cli_mode {
-            CliOutputDivisionMode::Single => OutputDivisionMode::Single,
-            CliOutputDivisionMode::Remote => OutputDivisionMode::Remote,
-            CliOutputDivisionMode::Folder => OutputDivisionMode::Folder,
-        }
-    }
-}
+// // Map CLI enum to internal lib enum
+// impl From<CliOutputDivisionMode> for OutputDivisionMode {
+//     fn from(cli_mode: CliOutputDivisionMode) -> Self {
+//         match cli_mode {
+//             CliOutputDivisionMode::Single => OutputDivisionMode::Single,
+//             CliOutputDivisionMode::Remote => OutputDivisionMode::Remote,
+//             CliOutputDivisionMode::Folder => OutputDivisionMode::Folder,
+//         }
+//     }
+// }
 
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
@@ -71,10 +71,10 @@ struct Args {
     #[arg(
         long,
         value_enum, // Use clap's value_enum feature
-        default_value_t = CliOutputDivisionMode::Folder, // Default to folder structure
+        default_value_t = OutputDivisionMode::Folder, // Default to folder structure
         env = "RCLONE_ANALYZER_OUTPUT_DIVISION"
     )]
-    output_division: CliOutputDivisionMode,
+    output_division: OutputDivisionMode,
 
     /// Enable duplicate file detection report
     #[arg(
