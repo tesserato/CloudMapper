@@ -193,6 +193,10 @@ impl File {
         &self,
         indent_size: usize, // Spaces per level (e.g., 2)
         all_files: &HashMap<String, File>,
+        folder_icon: &str,
+        file_icon: &str,
+        size_icon: &str,
+        date_icon: &str,
     ) -> (String, u64) {
         let name = self.get_display_name();
 
@@ -202,12 +206,7 @@ impl File {
         // This makes root items have indent_size * 1 spaces, children indent_size * 2, etc.
         let indent = " ".repeat(indent_size * self.path.len());
 
-        let starter = if self.is_dir { "📁" } else { "📄" }; // Icons
-                                                             // let dot_ext = if !self.is_dir && !self.ext.is_empty() {
-                                                             //     format!(".{}", self.ext)
-                                                             // } else {
-                                                             //     "".to_string()
-                                                             // };
+        let starter = if self.is_dir { folder_icon } else { file_icon }; // Icons
 
         // Calculate size (recursive sum for dirs, own size for files)
         let mut total_size: u64 = if self.size >= 0 { self.size as u64 } else { 0 };
@@ -231,7 +230,14 @@ impl File {
         for key in sorted_children_keys {
             if let Some(child_file) = all_files.get(key) {
                 // Pass the same indent_size down
-                let (child_str, child_size) = child_file.format_tree_entry(indent_size, all_files);
+                let (child_str, child_size) = child_file.format_tree_entry(
+                    indent_size,
+                    all_files,
+                    folder_icon,
+                    file_icon,
+                    size_icon,
+                    date_icon,
+                );
                 children_output.push(child_str);
                 if self.is_dir {
                     total_size += child_size; // Add child size to dir total
@@ -260,7 +266,7 @@ impl File {
 
         // Format the current line using the calculated indent
         let entry_str = format!(
-            "{}{} {} 💾 {} 📅 {}",
+            "{}{} {} {size_icon} {} {date_icon} {}",
             indent, starter, name, size_str, modified_str
         );
 
@@ -461,7 +467,14 @@ impl Files {
 
     /// Generates the formatted tree string, total size, and per-service sizes.
     /// Returns: (Tree String, Grand Total Size, Map<ServiceName, ServiceTotalSize>)
-    pub fn generate_tree_output(&self) -> (String, u64, HashMap<String, u64>) {
+    pub fn generate_tree_output(
+        &self,
+        folder_icon: &str,
+        file_icon: &str,
+        size_icon: &str,
+        date_icon: &str,
+        remote_icon: &str,
+    ) -> (String, u64, HashMap<String, u64>) {
         let mut final_text: Vec<String> = Vec::new();
         let mut grand_total_size: u64 = 0;
         let mut service_sizes: HashMap<String, u64> = HashMap::new(); // To store size per service
@@ -498,8 +511,14 @@ impl Files {
             for root_key in &sorted_root_keys {
                 if let Some(root_file) = self.files.get(root_key) {
                     let indent_size_per_level = 2; // Define indent size (e.g., 2 spaces)
-                    let (entry_str, entry_calculated_size) =
-                        root_file.format_tree_entry(indent_size_per_level, &self.files);
+                    let (entry_str, entry_calculated_size) = root_file.format_tree_entry(
+                        indent_size_per_level,
+                        &self.files,
+                        folder_icon,
+                        file_icon,
+                        size_icon,
+                        date_icon,
+                    );
                     service_entries_lines.push(entry_str); // Add the formatted string
                     service_total_size += entry_calculated_size; // Accumulate size for this service
                 } else {
@@ -511,10 +530,10 @@ impl Files {
             }
 
             // Add service header (no indent)
-            let service_prefix = "➡️";
+            // let service_prefix = "➡️";
             final_text.push(format!(
                 "{} {}: {}",
-                service_prefix,
+                remote_icon,
                 service_name,
                 human_bytes(service_total_size as f64)
             ));
@@ -692,6 +711,11 @@ pub fn generate_reports(
     tree_output_path: &str,
     duplicates_output_path: &str,
     size_output_path: &str,
+    folder_icon: &str,
+    file_icon: &str,
+    size_icon: &str,
+    date_icon: &str,
+    remote_icon: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Generating standard reports...");
 
@@ -717,7 +741,8 @@ pub fn generate_reports(
     }
 
     // 3. Generate tree report string and get size info (per service and total)
-    let (tree_report_string, total_size, service_sizes) = files_data.generate_tree_output();
+    let (tree_report_string, total_size, service_sizes) =
+        files_data.generate_tree_output(folder_icon, file_icon, size_icon, date_icon, remote_icon);
 
     // 4. Format the size report string (with per-service breakdown of *used* space)
     let mut size_report_lines: Vec<String> = Vec::new();

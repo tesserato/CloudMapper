@@ -2,17 +2,21 @@ use clap::Parser;
 use rayon::prelude::*;
 
 use std::fs;
-use std::io::{self, ErrorKind}; // Keep io imports if needed for main error handling
+use std::io::{self, ErrorKind};
 use std::path::PathBuf;
-// std::process, Output, Stdio are no longer needed here as run_command moved
 use std::time::Instant;
 
 // --- Configuration Constants (Base Filenames) ---
 const TREE_OUTPUT_FILE_NAME: &str = "files.txt";
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
-const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt"; // New report filename
-// --- End Configuration Constants ---
+const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
+
+const REMOTE_ICON: &str = "☁️";
+const FOLDER_ICON: &str = "📁";
+const FILE_ICON: &str = "📄";
+const SIZE_ICON: &str = "💽";
+const DATE_ICON: &str = "📆";
 
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
@@ -27,19 +31,32 @@ struct Args {
     rclone_config: Option<String>,
 
     /// Path to the directory for output reports
-    #[arg(long, short = 'o', env = "RCLONE_ANALYZER_OUTPUT", default_value = "./cloud")]
+    #[arg(
+        long,
+        short = 'o',
+        env = "RCLONE_ANALYZER_OUTPUT",
+        default_value = "./cloud"
+    )]
     output_path: String,
 
     /// Enable duplicate file detection report
-    #[arg(long, short = 'd', default_value_t = true, env = "RCLONE_ANALYZER_DUPLICATES")]
+    #[arg(
+        long,
+        short = 'd',
+        default_value_t = true,
+        env = "RCLONE_ANALYZER_DUPLICATES"
+    )]
     duplicates: bool,
 
     /// Enable the 'rclone about' report for remote sizes
-    #[arg(long, short = 'a', default_value_t = true, env = "RCLONE_ANALYZER_ABOUT")]
+    #[arg(
+        long,
+        short = 'a',
+        default_value_t = true,
+        env = "RCLONE_ANALYZER_ABOUT"
+    )]
     about_report: bool, // New flag for the about report
 }
-
-// run_command moved to lib.rs
 
 // Define a type alias for the result of processing a single remote
 type RemoteProcessingResult = Result<(String, Vec<cloudmapper::RawFile>), (String, String)>;
@@ -88,27 +105,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     list_remotes_args_for_cmd.push("listremotes"); // Push &str
 
     // Use run_command from lib.rs
-    let remote_names: Vec<String> = match cloudmapper::run_command(rclone_executable, &list_remotes_args_for_cmd)
-    {
-        Ok(output) => {
-            if !output.status.success() {
-                return Err(Box::new(io::Error::new(
-                    ErrorKind::Other,
-                    format!("'{} listremotes' failed.", rclone_executable),
-                )));
+    let remote_names: Vec<String> =
+        match cloudmapper::run_command(rclone_executable, &list_remotes_args_for_cmd) {
+            Ok(output) => {
+                if !output.status.success() {
+                    return Err(Box::new(io::Error::new(
+                        ErrorKind::Other,
+                        format!("'{} listremotes' failed.", rclone_executable),
+                    )));
+                }
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(|line| line.trim())
+                    .filter(|line| !line.is_empty() && line.ends_with(':')) // Filter for lines ending with ':'
+                    .map(|line| line.trim_end_matches(':').to_string()) // Remove trailing ':' and collect
+                    .collect()
             }
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty() && line.ends_with(':')) // Filter for lines ending with ':'
-                .map(|line| line.trim_end_matches(':').to_string()) // Remove trailing ':' and collect
-                .collect()
-        }
-        Err(e) => {
-             eprintln!("Error running '{} listremotes': {}", rclone_executable, e);
-            return Err(Box::new(e));
-        }
-    };
+            Err(e) => {
+                eprintln!("Error running '{} listremotes': {}", rclone_executable, e);
+                return Err(Box::new(e));
+            }
+        };
 
     if remote_names.is_empty() {
         println!("No rclone remotes found or 'rclone listremotes' failed. Exiting.");
@@ -249,14 +266,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // This means lsjson ran successfully but found 0 files/dirs on any remote
             println!("No files found across any successfully processed remotes. Skipping report generation (except potentially 'about' report).");
         }
-         // Still allow 'about' report to run even if no files found, as long as remotes exist
+        // Still allow 'about' report to run even if no files found, as long as remotes exist
         if args.about_report && !remote_names.is_empty() {
-             println!("Attempting to generate 'about' report...");
-             // Fall through to 'about' report generation below
+            println!("Attempting to generate 'about' report...");
+            // Fall through to 'about' report generation below
         } else {
-             return Ok(()); // Exit if no files and no about report requested/possible
+            return Ok(()); // Exit if no files and no about report requested/possible
         }
-
     }
 
     // --- Generate Standard Reports ---
@@ -269,13 +285,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let duplicates_output_path = output_dir.join(DUPLICATES_OUTPUT_FILE_NAME);
     let size_output_path = output_dir.join(SIZE_OUTPUT_FILE_NAME);
 
-    if !files_collection.files.is_empty() { // Only run standard reports if we have file data
+    if !files_collection.files.is_empty() {
+        // Only run standard reports if we have file data
         match cloudmapper::generate_reports(
             &mut files_collection,
-            args.duplicates, // Pass CLI flag value
+            args.duplicates,                               // Pass CLI flag value
             tree_output_path.to_str().unwrap_or_default(), // Convert PathBuf to &str
             duplicates_output_path.to_str().unwrap_or_default(),
             size_output_path.to_str().unwrap_or_default(),
+            FOLDER_ICON,
+            FILE_ICON,
+            SIZE_ICON,
+            DATE_ICON,
+            REMOTE_ICON,
         ) {
             Ok(_) => {
                 println!(
@@ -284,7 +306,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!("  Tree report: {}", tree_output_path.display());
                 println!("  Size report: {}", size_output_path.display());
-                if args.duplicates { // Check CLI flag again for printing message
+                if args.duplicates {
+                    // Check CLI flag again for printing message
                     println!("  Duplicates report: {}", duplicates_output_path.display());
                 }
             }
@@ -295,21 +318,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-
     // --- Generate About Report (if enabled) ---
     let mut about_report_error = false;
     if args.about_report {
-         let about_report_start_time = Instant::now();
-         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
-         // Get the list of service names that were actually processed (from roots_by_service keys)
-         // or fall back to the original list if files_collection is empty but remotes were found
-         let services_to_query = if !files_collection.roots_by_service.is_empty() {
-             files_collection.get_service_names()
-         } else {
-             remote_names.clone() // Use the initial list if no files were processed
-         };
+        let about_report_start_time = Instant::now();
+        let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
+        // Get the list of service names that were actually processed (from roots_by_service keys)
+        // or fall back to the original list if files_collection is empty but remotes were found
+        let services_to_query = if !files_collection.roots_by_service.is_empty() {
+            files_collection.get_service_names()
+        } else {
+            remote_names.clone() // Use the initial list if no files were processed
+        };
 
-         if !services_to_query.is_empty() {
+        if !services_to_query.is_empty() {
             match cloudmapper::generate_about_report(
                 &services_to_query, // Pass the list of services/remotes
                 rclone_executable,
@@ -317,9 +339,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 about_output_path.to_str().unwrap_or_default(),
             ) {
                 Ok(_) => {
-                     println!(
+                    println!(
                         "'About' report generated successfully in {:.2}s.",
-                         about_report_start_time.elapsed().as_secs_f32()
+                        about_report_start_time.elapsed().as_secs_f32()
                     );
                     println!("  About report: {}", about_output_path.display());
                 }
@@ -328,24 +350,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     about_report_error = true; // Mark error
                 }
             }
-         } else {
-             println!("Skipping 'about' report as no remotes were identified for querying.");
-              // Optionally clean up old report if exists and skipping
-             if about_output_path.exists() {
-                 let _ = fs::remove_file(&about_output_path);
-                 println!("Removed existing about report file '{}'", about_output_path.display());
-             }
-         }
+        } else {
+            println!("Skipping 'about' report as no remotes were identified for querying.");
+            // Optionally clean up old report if exists and skipping
+            if about_output_path.exists() {
+                let _ = fs::remove_file(&about_output_path);
+                println!(
+                    "Removed existing about report file '{}'",
+                    about_output_path.display()
+                );
+            }
+        }
     } else {
-         println!("'About' report generation skipped by flag.");
-          // Optionally clean up old report if exists and skipping
-         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
-         if about_output_path.exists() {
+        println!("'About' report generation skipped by flag.");
+        // Optionally clean up old report if exists and skipping
+        let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
+        if about_output_path.exists() {
             let _ = fs::remove_file(&about_output_path);
-            println!("Removed existing about report file '{}'", about_output_path.display());
-         }
+            println!(
+                "Removed existing about report file '{}'",
+                about_output_path.display()
+            );
+        }
     }
-
 
     // --- 5. Print Summary ---
     let total_duration = overall_start_time.elapsed();
@@ -358,8 +385,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         remotes_processed_successfully
     );
     // Consolidate error reporting
-    let total_errors = process_errors + if report_generation_error { 1 } else { 0 } + if about_report_error { 1 } else { 0 };
-    println!("  Processing/Reporting errors encountered: {}", total_errors);
+    let total_errors = process_errors
+        + if report_generation_error { 1 } else { 0 }
+        + if about_report_error { 1 } else { 0 };
+    println!(
+        "  Processing/Reporting errors encountered: {}",
+        total_errors
+    );
     println!("==========================================");
 
     if total_errors > 0 {
