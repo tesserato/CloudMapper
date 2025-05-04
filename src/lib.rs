@@ -195,7 +195,10 @@ impl File {
 
     // Helper to get the display name (last path component)
     fn get_display_name(&self) -> String {
-        self.path.last().cloned().unwrap_or_else(|| "/".to_string()) // FIXME Use "/" for potential root representation?
+        self.path
+            .last()
+            .cloned()
+            .unwrap_or_else(|| self.service.clone()) // Use service name for root? Or "/"? Let's use service name for clarity in paths.
     }
 
     // --- format_tree_entry ---
@@ -215,8 +218,11 @@ impl File {
         // Calculate indent based on the *absolute depth* (number of path components)
         // multiplied by the indent size per level.
         // self.path.len() is 1 for root items, 2 for their children, etc.
-        // This makes root items have indent_size * 1 spaces, children indent_size * 2, etc.
-        let indent = " ".repeat(indent_size * self.path.len());
+        // We want root items (depth 1) to have 0 indent relative to the service header,
+        // their children (depth 2) to have indent_size * 1, etc.
+        // So, use (depth - 1) * indent_size.
+        let indent_level = self.path.len().saturating_sub(1); // Depth 1 -> 0, Depth 2 -> 1
+        let indent = " ".repeat(indent_size * indent_level);
 
         let starter = if self.is_dir { folder_icon } else { file_icon }; // Icons
 
@@ -224,13 +230,14 @@ impl File {
         let mut total_size: u64 = if self.size >= 0 { self.size as u64 } else { 0 };
         let mut children_output = Vec::new();
 
-        // Sort children: Files first, then folders, then alphabetically.
+        // Sort children: Dirs first, then Files, then alphabetically. (User request correction)
         let mut sorted_children_keys: Vec<&String> = self.children_keys.iter().collect();
         sorted_children_keys.sort_by(|a_key, b_key| {
             match (all_files.get(*a_key), all_files.get(*b_key)) {
                 (Some(a), Some(b)) => a
-                    .is_dir // Sort by is_dir ascending (false=file, true=dir)
-                    .cmp(&b.is_dir) // Files (false) come before Dirs (true)
+                    .is_dir
+                    .cmp(&b.is_dir)
+                    .reverse() // Sort by is_dir descending (true=dir, false=file) -> Dirs first
                     .then_with(|| a.get_display_name().cmp(&b.get_display_name())), // Then alpha
                 (None, Some(_)) => Ordering::Greater, // Handle missing keys (shouldn't happen ideally)
                 (Some(_), None) => Ordering::Less,
@@ -348,6 +355,7 @@ impl File {
                 let modified_str = &child_file.modified;
 
                 // Format: Indent level 1, Icon, Name, Size, Date
+                // Use exactly two spaces for indentation within the file
                 let line = format!(
                     "  {} {} {size_icon} {} {date_icon} {}",
                     starter, name, size_str, modified_str
@@ -360,24 +368,25 @@ impl File {
 
     /// Recursively writes directory structure and content files for Folder mode.
     fn write_fs_node_recursive(
-        &self, // The File object for the current node (file or dir)
-        parent_fs_path: &Path,
+        &self,                 // The File object for the current node (file or dir)
+        parent_fs_path: &Path, // The filesystem path of the PARENT directory
         all_files: &HashMap<String, File>,
         folder_icon: &str,
         file_icon: &str,
         size_icon: &str,
         date_icon: &str,
+        folder_content_filename: &str, // e.g., "files.txt"
     ) -> io::Result<()> {
         if !self.is_dir {
-            // Files are handled when their parent directory calls this function for its children.
+            // Files are only listed in their parent's content file.
             return Ok(());
         }
 
-        // It's a directory, create it on the filesystem
+        // It's a directory. Construct its path on the filesystem.
         let current_fs_path = parent_fs_path.join(self.get_display_name());
-        fs::create_dir_all(&current_fs_path)?;
+        fs::create_dir_all(&current_fs_path)?; // Ensure this directory exists
 
-        // Generate the content list for the _contents.txt file in this directory
+        // Generate the content list for the content file inside this directory
         let contents_string = self.format_direct_children_list(
             all_files,
             folder_icon,
@@ -386,22 +395,23 @@ impl File {
             date_icon,
         );
 
-        // Write the _contents.txt file
-        let contents_file_path = current_fs_path.join("files.txt");
+        // Write the content file (e.g., files.txt) inside the current directory
+        let contents_file_path = current_fs_path.join(folder_content_filename);
         fs::write(&contents_file_path, contents_string)?;
 
-        // Recursively call for child directories
+        // Recursively call for child DIRECTORIES only
         for child_key in &self.children_keys {
             if let Some(child_file) = all_files.get(child_key) {
-                // Only recurse if the child is a directory itself
                 if child_file.is_dir {
+                    // The current directory becomes the parent path for the next level
                     child_file.write_fs_node_recursive(
-                        parent_fs_path, // The newly created directory is the parent for the next level
+                        parent_fs_path, // Pass the newly created directory path
                         all_files,
                         folder_icon,
                         file_icon,
                         size_icon,
                         date_icon,
+                        folder_content_filename,
                     )?;
                 }
             }
@@ -413,7 +423,7 @@ impl File {
 // Internal struct for tracking duplicates
 #[derive(Debug)]
 struct DuplicateInfo {
-    paths: Vec<String>, // List of full paths (service::path/to/file)
+    paths: Vec<String>, // List of full paths (service:path/to/file)
     size: u64,
 }
 
@@ -446,11 +456,17 @@ impl Files {
         sorted_raw_files.sort(); // Process dirs first, shallow paths first
 
         for raw_file in sorted_raw_files {
+            // Skip entries that are clearly invalid or represent the root directory itself
+            // which rclone lsjson sometimes includes with empty Path/Name.
+            if raw_file.path.is_empty() && raw_file.name.is_empty() && raw_file.is_dir {
+                // eprintln!("Skipping root directory placeholder for service: {}", service_name);
+                continue;
+            }
             if raw_file.path.is_empty() {
                 eprintln!("Warning: Skipping raw file with empty path: {:?}", raw_file);
                 continue;
             }
-            // Allow empty Name for root dir potentially
+            // Allow empty Name for directories if Path is set (e.g., top-level dir)
             if !raw_file.is_dir && raw_file.name.is_empty() {
                 eprintln!("Warning: Skipping raw file with empty name: {:?}", raw_file);
                 continue;
@@ -462,8 +478,11 @@ impl Files {
             // Add file hashes to map for duplicate checking later
             if !file.is_dir {
                 if let Some(hashes) = &file.hashes {
+                    // Only consider files with at least one hash type present
+                    // (Checking for None Option is done by let Some)
+                    // Further filter by specific hash types if needed (e.g., require SHA1 or MD5)
                     if file.size >= 0 {
-                        // Only consider files with hashes and non-negative size
+                        // Only consider files with non-negative size
                         self.hash_map
                             .entry(hashes.clone())
                             .or_default()
@@ -471,9 +490,18 @@ impl Files {
                     }
                 }
             }
+
             // Store the file/dir; warn on overwrite (might indicate duplicate input)
             if self.files.insert(key.clone(), file.clone()).is_some() {
-                eprintln!("Warning: Overwriting existing file key (potential duplicate entry in source JSON): {}", key);
+                // This warning can be noisy if rclone lists a dir and then its contents immediately
+                // Let's only warn if the file type *changes* which is more indicative of a problem
+                if let Some(existing_file) = self.files.get(&key) {
+                    if existing_file.is_dir != file.is_dir {
+                        eprintln!("Warning: Overwriting existing key '{}' with different type (is_dir: {} -> {}). Check rclone output.", key, existing_file.is_dir, file.is_dir);
+                    }
+                }
+                // Re-insert the new file regardless of warning
+                self.files.insert(key.clone(), file);
             }
             service_keys_added_this_run.insert(key);
         }
@@ -489,8 +517,8 @@ impl Files {
             .insert(service_name.to_string(), service_root_keys); // Store roots
 
         println!(
-            "Finished adding {} files for remote {}", // Note: self.files.len() is cumulative here
-            service_keys_added_this_run.len(),        // Print count for this run
+            "Finished adding {} files/dirs for remote {}",
+            service_keys_added_this_run.len(),
             service_name
         );
     }
@@ -511,13 +539,13 @@ impl Files {
                     if let Some(parent_file) = self.files.get(&parent_key) {
                         if parent_file.is_dir {
                             parent_child_map
-                                .entry(parent_key)
+                                .entry(parent_key.clone()) // Clone parent_key here
                                 .or_default()
-                                .insert(key.clone());
+                                .insert(key.clone()); // Clone key here
                         } else {
                             // This could happen if key generation logic is flawed or source data is inconsistent
                             eprintln!(
-                                "Warning: Potential parent key '{}' exists but is not marked as a directory. Cannot assign child '{}'.",
+                                "Warning: Potential parent key '{}' for child '{}' exists but is not marked as a directory. Cannot assign child.",
                                 parent_key, key
                             );
                         }
@@ -528,15 +556,18 @@ impl Files {
                             "Warning: Parent key '{}' not found for file '{}'. File might be orphaned in tree view.",
                             parent_key, key
                         );
+                        // We might want to add it as a root for its service if it's orphaned?
+                        // Or just let it be unlinked. For now, just warn.
                     }
                 }
+                // If get_parent_key returned None, it's already considered a root (handled in add_remote_files)
             }
         }
-        // Update children_keys in parent File objects
+
+        // Second pass: Update children_keys in parent File objects
         for (parent_key, children_keys) in parent_child_map {
             if let Some(parent_file) = self.files.get_mut(&parent_key) {
-                // Ensure the parent is marked as a directory (sometimes rclone might not?)
-                // parent_file.is_dir = true;
+                // We already checked parent_file.is_dir in the first pass
                 parent_file.children_keys = children_keys;
             }
         }
@@ -890,10 +921,20 @@ pub fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error>
     match output {
         Ok(ref out) => {
             if !out.status.success() {
-                eprintln!("  Command failed with status: {}", out.status);
+                // eprintln!("  Command failed with status: {}", out.status); // Reduced verbosity
                 let stderr_str = String::from_utf8_lossy(&out.stderr);
                 if !stderr_str.is_empty() {
-                    eprintln!("  stderr:\n---\n{}\n---", stderr_str.trim());
+                    eprintln!(
+                        "  Command '{} {}' failed with stderr:\n---\n{}\n---",
+                        executable,
+                        args_display,
+                        stderr_str.trim()
+                    );
+                } else {
+                    eprintln!(
+                        "  Command '{} {}' failed with status code {}. No stderr output.",
+                        executable, args_display, out.status
+                    );
                 }
             }
         }
@@ -924,6 +965,7 @@ pub fn generate_reports(
     enable_duplicates_report: bool,
     output_dir: &Path,        // Changed from tree_output_path to directory path
     tree_base_filename: &str, // Base name for single file mode, e.g., "files.txt"
+    folder_content_filename: &str, // Filename used inside folders in Folder mode, e.g., "files.txt"
     duplicates_output_filename: &str,
     size_output_filename: &str,
     folder_icon: &str,
@@ -932,13 +974,10 @@ pub fn generate_reports(
     date_icon: &str,
     remote_icon: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "Generating standard reports (Mode: {:?})...",
-        output_division_mode
-    );
+    println!("Generating reports (Mode: {:?})...", output_division_mode);
 
     // Ensure output directory exists (should be created by main, but double-check)
-    fs::remove_dir_all(output_dir)?;
+    // Let's not remove it here, main should handle clean start if desired.
     fs::create_dir_all(output_dir)?;
 
     // --- 1. Build parent-child links ---
@@ -947,7 +986,8 @@ pub fn generate_reports(
     // --- 2. Find and report duplicates (if enabled) ---
     // Duplicates report is always a single file.
     let duplicates_output_path = output_dir.join(duplicates_output_filename);
-    if enable_duplicates_report { // TODO run this in parallel
+    if enable_duplicates_report {
+        // TODO run this in parallel
         files_data.find_duplicates();
         let duplicates_report_string = files_data.generate_duplicates_output();
         fs::write(&duplicates_output_path, duplicates_report_string)?;
@@ -957,12 +997,10 @@ pub fn generate_reports(
         );
     } else {
         println!("Duplicate detection skipped.");
+        // Optionally remove old file if skipping
         if duplicates_output_path.exists() {
             let _ = fs::remove_file(&duplicates_output_path);
-            println!(
-                "Removed existing duplicates report file '{}'",
-                duplicates_output_path.display()
-            );
+            // println!("Removed existing duplicates report file '{}'", duplicates_output_path.display());
         }
     }
 
@@ -972,6 +1010,10 @@ pub fn generate_reports(
     // --- 4. Generate Size Report (always a single file) ---
     let size_output_path = output_dir.join(size_output_filename);
     let mut size_report_lines: Vec<String> = Vec::new();
+    size_report_lines.push(format!(
+        "Total used size across all services (calculated from listings): {}",
+        human_bytes(grand_total_size as f64)
+    ));
     size_report_lines.push("".to_string()); // Blank line
 
     let mut sorted_service_names: Vec<&String> = service_sizes.keys().collect();
@@ -979,11 +1021,7 @@ pub fn generate_reports(
 
     for service_name in sorted_service_names {
         if let Some(size) = service_sizes.get(service_name) {
-            size_report_lines.push(format!(
-                "{}: {} used",
-                service_name,
-                human_bytes(*size as f64)
-            ));
+            size_report_lines.push(format!("{}: {}", service_name, human_bytes(*size as f64)));
         }
     }
     size_report_lines.push("".to_string()); // Separator
@@ -1004,7 +1042,7 @@ pub fn generate_reports(
                 size_icon,
                 date_icon,
                 remote_icon,
-                &service_sizes,
+                &service_sizes, // Pass pre-calculated sizes
             );
             let tree_output_file_path = output_dir.join(tree_base_filename);
             fs::write(&tree_output_file_path, &tree_report_string)?;
@@ -1015,14 +1053,14 @@ pub fn generate_reports(
         }
         OutputDivisionMode::Remote => {
             // Regenerate sizes map if needed, though we have it from `calculate_all_sizes`
-            let mut sorted_services: Vec<&String> = files_data.roots_by_service.keys().collect();
+            let mut sorted_services: Vec<String> = files_data.get_service_names(); // Use helper
             sorted_services.sort();
 
             for service_name in sorted_services {
                 // Generate string and size just for this service
                 let (service_string, _service_calculated_size) = files_data
                     .generate_service_tree_string(
-                        service_name,
+                        &service_name,
                         folder_icon,
                         file_icon,
                         size_icon,
@@ -1031,12 +1069,14 @@ pub fn generate_reports(
                     );
 
                 // Construct filename like "output_dir/remote_name.txt"
+                // Sanitize service_name if necessary, but assume ok for now
                 let service_filename = format!("{}.txt", service_name);
                 let service_output_path = output_dir.join(service_filename);
-                fs::create_dir_all(&service_output_path)?;
+                // fs::create_dir_all(&service_output_path.parent().unwrap())?; // Ensure output dir exists (already done)
                 fs::write(&service_output_path, service_string)?;
                 println!(
-                    "  - Remote file list written to '{}'",
+                    "  - Remote file list written for '{}' to '{}'",
+                    service_name,
                     service_output_path.display()
                 );
             }
@@ -1046,30 +1086,73 @@ pub fn generate_reports(
             );
         }
         OutputDivisionMode::Folder => {
-            let mut sorted_services: Vec<&String> = files_data.roots_by_service.keys().collect();
+            let mut sorted_services: Vec<String> = files_data.get_service_names();
             sorted_services.sort();
 
+            println!("Writing folder structure to '{}'...", output_dir.display());
+
             for service_name in sorted_services {
-                let service_base_path = output_dir.join(service_name);
-                // No need to create dir here, write_fs_node_recursive handles it for roots too
+                // The base path for this service's directory structure
+                // Ensure the service's root directory exists. The recursive function expects the PARENT path.
+                // So, the parent path for root items is the main output_dir.
+                // The recursive function will create subdirs like output_dir/service_name/folder_name
 
                 let root_keys = files_data
                     .roots_by_service
-                    .get(service_name)
+                    .get(&service_name) // Use borrowed str
                     .cloned()
                     .unwrap_or_default();
 
-                for root_key in &root_keys {
+                if root_keys.is_empty() {
+                    println!("  - No root items found for remote '{}', skipping folder structure generation.", service_name);
+                    // Maybe create an empty service directory? Or just skip. Let's skip.
+                    // fs::create_dir_all(&service_base_path)?; // Optionally create empty dir
+                    continue;
+                }
+
+                // Need to sort roots here too
+                let mut sorted_root_keys = root_keys;
+                sorted_root_keys.sort_by(|a_key, b_key| {
+                    match (files_data.files.get(a_key), files_data.files.get(b_key)) {
+                        (Some(a), Some(b)) => a
+                            .is_dir
+                            .cmp(&b.is_dir)
+                            .reverse() // Dirs first
+                            .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                        (None, Some(_)) => Ordering::Greater,
+                        (Some(_), None) => Ordering::Less,
+                        (None, None) => Ordering::Equal,
+                    }
+                });
+
+                println!("  - Processing remote '{}'...", service_name);
+                for root_key in &sorted_root_keys {
+                    // Use sorted keys
                     if let Some(root_file) = files_data.files.get(root_key) {
-                        // The initial parent path is the service's base directory
+                        // Call the recursive writer. The parent path for root items is the main output directory.
+                        // The function expects the *parent* path to join the item name onto.
+
+                        let parent_path: &Path = if root_file.path.len() > 0 {
+                            let parent_path_string = root_file.path.join("/");
+                            Path::new(&parent_path_string)
+                        } else {
+                            output_dir.join(&service_name).as_path()
+                        };
+                        // let parent_path = ;
                         root_file.write_fs_node_recursive(
-                            &service_base_path.parent().unwrap_or(output_dir), // Pass parent dir
+                            &parent_path, // Parent path for service root items is the output dir itself
                             &files_data.files,
                             folder_icon,
                             file_icon,
                             size_icon,
                             date_icon,
+                            folder_content_filename, // Pass the filename for directory listings
                         )?;
+                    } else {
+                        eprintln!(
+                            "Warning: Root key '{}' not found during Folder mode processing for service '{}'.",
+                            root_key, service_name
+                        );
                     }
                 }
                 println!(
@@ -1078,13 +1161,13 @@ pub fn generate_reports(
                 );
             }
             println!(
-                "Tree report (folder structure) written to directory '{}'",
+                "Tree report (folder structure) generation complete in directory '{}'",
                 output_dir.display()
             );
         }
     }
 
-    println!("Standard reports generation finished.");
+    println!("Reports generation finished.");
     Ok(())
 }
 
@@ -1095,6 +1178,9 @@ pub fn generate_about_report(
     common_rclone_args: &[String], // Use slice of strings
     about_output_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // if about_output_path.is_empty() {
+    //     return Err("About report output path cannot be empty.".into());
+    // }
     println!("Generating about report (checking remote sizes)...");
     let mut report_lines: Vec<(String, String)> = Vec::new(); // Store (name, formatted_line) for sorting
 
@@ -1198,18 +1284,24 @@ pub fn generate_about_report(
     // Add Grand Total line if any remotes reported data
     if remotes_with_data > 0 {
         final_report_lines.push("".to_string());
+        // Calculate effective total capacity only if free and used are both available for summing
+        let effective_total_capacity = grand_total_used + grand_total_free;
         let grand_total_line = format!(
             "Grand Total ({} remotes): Used={}, Free={}, Trashed={}, Total Capacity={}",
             remotes_with_data,
             human_bytes(grand_total_used as f64),
             human_bytes(grand_total_free as f64),
             human_bytes(grand_total_trashed as f64),
-            human_bytes((grand_total_used + grand_total_free) as f64),
+            if effective_total_capacity > 0 {
+                human_bytes(effective_total_capacity as f64)
+            } else {
+                "N/A".to_string()
+            },
         );
         final_report_lines.push(grand_total_line);
     } else {
         final_report_lines.push("".to_string());
-        final_report_lines.push("Grand Total: No data available from any remote.".to_string());
+        final_report_lines.push("Grand Total: No size data available from any remote.".to_string());
     }
 
     // final_report_lines.push("--- End of Report ---".to_string());

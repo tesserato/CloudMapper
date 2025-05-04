@@ -12,7 +12,7 @@ use cloudmapper::OutputDivisionMode;
 
 // --- Configuration Constants (Base Filenames) ---
 // Keep these as base names, generate_reports will join with output_dir
-const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used only in Single mode
+const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used only in Single mode and as content filename in Folder mode
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
 const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
@@ -46,7 +46,6 @@ impl From<CliOutputDivisionMode> for OutputDivisionMode {
     }
 }
 
-
 // --- Command Line Argument Definition ---
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -72,7 +71,7 @@ struct Args {
     #[arg(
         long,
         value_enum, // Use clap's value_enum feature
-        default_value_t = CliOutputDivisionMode::Folder, // Default to single file
+        default_value_t = CliOutputDivisionMode::Folder, // Default to folder structure
         env = "RCLONE_ANALYZER_OUTPUT_DIVISION"
     )]
     output_division: CliOutputDivisionMode,
@@ -94,6 +93,15 @@ struct Args {
         env = "RCLONE_ANALYZER_ABOUT"
     )]
     about_report: bool,
+
+    /// Clean the output directory before generating reports
+    #[arg(
+        long,
+        short = 'C', // Capital C for Clean
+        default_value_t = true,
+        env = "RCLONE_ANALYZER_CLEAN_OUTPUT"
+    )]
+    clean_output: bool,
 }
 
 // Define a type alias for the result of processing a single remote
@@ -113,15 +121,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Output directory: {}", args.output_path);
     println!("Output division mode: {:?}", args.output_division); // Print new flag
+    println!("Clean output directory: {}", args.clean_output);
     println!("Duplicates report enabled: {}", args.duplicates);
     println!("About report enabled: {}", args.about_report);
 
     println!("Starting rclone data processing...");
     let overall_start_time = Instant::now();
 
-    // --- Create Output Directory ---
-    // Ensure the output directory exists, create it if not.
+    // --- Create/Clean Output Directory ---
     let output_dir = PathBuf::from(&args.output_path); // Store as PathBuf
+    if args.clean_output && output_dir.exists() {
+        println!("Cleaning output directory '{}'...", output_dir.display());
+        fs::remove_dir_all(&output_dir)?;
+        println!("Output directory cleaned.");
+    }
     fs::create_dir_all(&output_dir)?;
     println!("Output directory '{}' ensured.", output_dir.display());
 
@@ -149,9 +162,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match cloudmapper::run_command(rclone_executable, &list_remotes_args_for_cmd) {
             Ok(output) => {
                 if !output.status.success() {
+                    // stderr already printed by run_command
                     return Err(Box::new(io::Error::new(
                         ErrorKind::Other,
-                        format!("'{} listremotes' failed.", rclone_executable),
+                        format!(
+                            "'{} listremotes' failed. Cannot continue.",
+                            rclone_executable
+                        ),
                     )));
                 }
                 String::from_utf8_lossy(&output.stdout)
@@ -241,8 +258,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         // rclone command failed
                         let err_msg = format!(
-                            "rclone lsjson command failed for remote '{}' with status {}",
-                            remote_name, output.status
+                            "rclone lsjson command failed for remote '{}'", // Status logged by run_command
+                            remote_name                                     //, output.status
                         );
                         // stderr already printed by run_command
                         eprintln!("  {}", err_msg);
@@ -297,39 +314,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if files_collection.files.is_empty() {
         if process_errors > 0 {
             println!(
-                "No file data was collected due to processing errors. Skipping report generation."
+                "No file data was collected due to processing errors. Skipping standard report generation."
             );
         } else if remotes_processed_successfully == 0 && !remote_names.is_empty() {
             // This case might mean listremotes worked but all lsjson calls failed before parsing
-            println!("No data successfully processed from any remote. Skipping report generation.");
+            println!("No data successfully processed from any remote. Skipping standard report generation.");
         } else {
             // This means lsjson ran successfully but found 0 files/dirs on any remote
-            println!("No files found across any successfully processed remotes. Skipping report generation (except potentially 'about' report).");
+            println!("No files found across any successfully processed remotes. Skipping standard report generation.");
         }
         // Still allow 'about' report to run even if no files found, as long as remotes exist
-        if args.about_report && !remote_names.is_empty() {
-            println!("Attempting to generate 'about' report...");
-            // Fall through to 'about' report generation below
-        } else {
+        if !args.about_report || remote_names.is_empty() {
+            println!("No reports to generate. Exiting.");
             return Ok(()); // Exit if no files and no about report requested/possible
+        } else {
+            println!("Proceeding with 'about' report generation only.");
+            // Fall through to 'about' report generation below
         }
-    }
+    } else {
+        // --- Generate Standard Reports (Only if files_collection is not empty) ---
+        println!("Generating standard reports (tree/files, size_used, duplicates)...");
+        let report_start_time = Instant::now();
 
-    // --- Generate Standard Reports ---
-    println!("Generating standard reports (tree/files, size_used, duplicates)...");
-    let report_start_time = Instant::now();
+        // Convert the CLI enum variant to the lib's enum variant
+        let output_division_mode_lib: OutputDivisionMode = args.output_division.into();
 
-    // Convert the CLI enum variant to the lib's enum variant
-    let output_division_mode_lib: OutputDivisionMode = args.output_division.into();
-
-    if !files_collection.files.is_empty() {
-        // Only run standard reports if we have file data
         match cloudmapper::generate_reports(
             &mut files_collection,
             output_division_mode_lib, // Pass chosen division mode
             args.duplicates,
-            &output_dir, // Pass the output directory PathBuf
-            TREE_OUTPUT_FILE_NAME, // Pass base name, lib constructs full path if needed
+            &output_dir,           // Pass the output directory PathBuf
+            TREE_OUTPUT_FILE_NAME, // Pass base name for Single mode
+            TREE_OUTPUT_FILE_NAME, // Pass base name for Folder mode content files
             DUPLICATES_OUTPUT_FILE_NAME,
             SIZE_OUTPUT_FILE_NAME,
             FOLDER_ICON,
@@ -345,16 +361,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 // Adjust success message based on mode
                 match output_division_mode_lib {
-                     OutputDivisionMode::Single => {
-                         println!("  Tree report: {}", output_dir.join(TREE_OUTPUT_FILE_NAME).display());
-                     },
-                     OutputDivisionMode::Remote | OutputDivisionMode::Folder => {
-                         println!("  File list/structure output: {}", output_dir.display());
-                     }
+                    OutputDivisionMode::Single => {
+                        println!(
+                            "  File list report: {}",
+                            output_dir.join(TREE_OUTPUT_FILE_NAME).display()
+                        );
+                    }
+                    OutputDivisionMode::Remote | OutputDivisionMode::Folder => {
+                        println!(
+                            "  File list/structure output generated in: {}",
+                            output_dir.display()
+                        );
+                    }
                 }
-                println!("  Size report: {}", output_dir.join(SIZE_OUTPUT_FILE_NAME).display());
+                println!(
+                    "  Size report: {}",
+                    output_dir.join(SIZE_OUTPUT_FILE_NAME).display()
+                );
                 if args.duplicates {
-                    println!("  Duplicates report: {}", output_dir.join(DUPLICATES_OUTPUT_FILE_NAME).display());
+                    println!(
+                        "  Duplicates report: {}",
+                        output_dir.join(DUPLICATES_OUTPUT_FILE_NAME).display()
+                    );
                 }
             }
             Err(e) => {
@@ -385,8 +413,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &common_rclone_args, // Pass common args (like --config)
                 // Pass path as &str
                 about_output_path.to_str().unwrap_or_else(|| {
-                    eprintln!("Warning: Could not convert about output path to string.");
-                    "" // Provide a default empty string if conversion fails
+                    eprintln!("Warning: Could not convert about output path to string. Skipping about report.");
+                    "" // Provide an empty string to cause generate_about_report to error safely
                 }),
             ) {
                 Ok(_) => {
@@ -406,10 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Optionally clean up old report if exists and skipping
             if about_output_path.exists() {
                 let _ = fs::remove_file(&about_output_path);
-                println!(
-                    "Removed existing about report file '{}'",
-                    about_output_path.display()
-                );
+                // println!("Removed existing about report file '{}'", about_output_path.display());
             }
         }
     } else {
@@ -418,10 +443,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
         if about_output_path.exists() {
             let _ = fs::remove_file(&about_output_path);
-            println!(
-                "Removed existing about report file '{}'",
-                about_output_path.display()
-            );
+            // println!("Removed existing about report file '{}'", about_output_path.display());
         }
     }
 
@@ -448,10 +470,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if total_errors > 0 {
         eprintln!("Completed with errors.");
         // Decide if any error should result in a non-zero exit code
-        return Err(Box::new(io::Error::new(
-            ErrorKind::Other,
-            "Processing completed with errors",
-        )));
+        // Let's return an error if lsjson processing had errors or report generation failed
+        if process_errors > 0 || report_generation_error || about_report_error {
+            return Err(Box::new(io::Error::new(
+                ErrorKind::Other,
+                "Processing completed with errors",
+            )));
+        }
     }
 
     println!("Processing completed successfully.");
