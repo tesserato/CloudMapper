@@ -405,7 +405,7 @@ impl File {
                 if child_file.is_dir {
                     // The current directory becomes the parent path for the next level
                     child_file.write_fs_node_recursive(
-                        parent_fs_path, // Pass the newly created directory path
+                        current_fs_path.as_path(), // Pass the newly created directory path
                         all_files,
                         folder_icon,
                         file_icon,
@@ -1092,10 +1092,12 @@ pub fn generate_reports(
             println!("Writing folder structure to '{}'...", output_dir.display());
 
             for service_name in sorted_services {
-                // The base path for this service's directory structure
-                // Ensure the service's root directory exists. The recursive function expects the PARENT path.
-                // So, the parent path for root items is the main output_dir.
-                // The recursive function will create subdirs like output_dir/service_name/folder_name
+                // Define the filesystem path for the directory representing this service
+                let service_dir_path = output_dir.join(&service_name);
+                // Note: We don't necessarily need to create service_dir_path here.
+                // write_fs_node_recursive will create directories as needed when it encounters
+                // the first root directory for this service. If a service ONLY contains
+                // root *files*, they won't be written by the current recursive logic anyway.
 
                 let root_keys = files_data
                     .roots_by_service
@@ -1105,12 +1107,10 @@ pub fn generate_reports(
 
                 if root_keys.is_empty() {
                     println!("  - No root items found for remote '{}', skipping folder structure generation.", service_name);
-                    // Maybe create an empty service directory? Or just skip. Let's skip.
-                    // fs::create_dir_all(&service_base_path)?; // Optionally create empty dir
                     continue;
                 }
 
-                // Need to sort roots here too
+                // Need to sort roots here too: Dirs first, then alpha
                 let mut sorted_root_keys = root_keys;
                 sorted_root_keys.sort_by(|a_key, b_key| {
                     match (files_data.files.get(a_key), files_data.files.get(b_key)) {
@@ -1125,22 +1125,23 @@ pub fn generate_reports(
                     }
                 });
 
-                println!("  - Processing remote '{}'...", service_name);
+                println!(
+                    "  - Processing remote '{}' (output root: '{}')...",
+                    service_name,
+                    service_dir_path.display()
+                );
+
                 for root_key in &sorted_root_keys {
                     // Use sorted keys
                     if let Some(root_file) = files_data.files.get(root_key) {
-                        // Call the recursive writer. The parent path for root items is the main output directory.
-                        // The function expects the *parent* path to join the item name onto.
-
-                        let parent_path: &Path = if root_file.path.len() > 0 {
-                            let parent_path_string = root_file.path.join("/");
-                            Path::new(&parent_path_string)
-                        } else {
-                            output_dir.join(&service_name).as_path()
-                        };
-                        // let parent_path = ;
+                        // ******** CORRECTION START ********
+                        // Call the recursive writer for this root item.
+                        // The parent path required by write_fs_node_recursive is the directory
+                        // where this root_file should be created/listed. For a root file
+                        // of 'service_name', this parent directory is 'output_dir/service_name'.
+                        // We pass a reference to the PathBuf which lives long enough.
                         root_file.write_fs_node_recursive(
-                            &parent_path, // Parent path for service root items is the output dir itself
+                            &service_dir_path, // Pass the service's directory path as the parent
                             &files_data.files,
                             folder_icon,
                             file_icon,
@@ -1148,6 +1149,7 @@ pub fn generate_reports(
                             date_icon,
                             folder_content_filename, // Pass the filename for directory listings
                         )?;
+                        // ******** CORRECTION END ********
                     } else {
                         eprintln!(
                             "Warning: Root key '{}' not found during Folder mode processing for service '{}'.",
@@ -1155,10 +1157,6 @@ pub fn generate_reports(
                         );
                     }
                 }
-                println!(
-                    "  - Folder structure for remote '{}' written.",
-                    service_name
-                );
             }
             println!(
                 "Tree report (folder structure) generation complete in directory '{}'",
