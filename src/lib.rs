@@ -9,6 +9,7 @@ use std::path::Path; // Added for writing files, PathBuf for directory manipulat
 use std::process::{Command, Output, Stdio}; // Added for run_command
 
 const MODE_REMOTES_SERVICE_PREFIX: &str = "_";
+const NO_EXTENSION_KEY: &str = "[no extension]";
 
 // Import the enum defined in main.rs - requires main.rs to define it publicly or pass instances
 // For simplicity, let's assume main.rs passes an instance of its enum.
@@ -101,18 +102,21 @@ fn get_name_and_extension(path: &str) -> (String, Option<String>) {
     let name = p
         .file_stem()
         .map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
-    let ext = p.extension().map(|s| s.to_string_lossy().into_owned());
+    // Get extension and convert to lowercase for consistent grouping
+    let ext = p
+        .extension()
+        .map(|s| s.to_string_lossy().to_lowercase());
     (name, ext)
 }
 
 #[derive(Debug, Clone)]
 pub struct File {
     service: String, // The original remote name
-    ext: String,
+    pub ext: String, // Keep public for extension report access
     path: Vec<String>, // Path components (e.g., ["folder1", "file.txt"])
     modified: String,
     size: i64,                      // Keep as i64 to handle potential -1 from rclone
-    is_dir: bool,                   // Store if it's a directory explicitly
+    pub is_dir: bool,               // Keep public for reporting access
     children_keys: HashSet<String>, // Keys of direct children
     hashes: Option<Hashes>,
 }
@@ -130,7 +134,7 @@ impl File {
             // For directories, the last component is the name, extension is empty
             (path_components.last().cloned().unwrap_or_default(), None)
         } else {
-            // For files, extract from Name field
+            // For files, extract from Name field (lowercase extension)
             get_name_and_extension(&raw_file.name)
         };
         let mut final_path = path_components;
@@ -157,7 +161,7 @@ impl File {
 
         Self {
             service,
-            ext: ext_opt.unwrap_or_default(),
+            ext: ext_opt.unwrap_or_default(), // Use empty string if no extension
             path: final_path, // Contains components like ["dir1", "subdir", "file"]
             modified: raw_file.mod_time.clone(),
             size: raw_file.size,
@@ -176,11 +180,12 @@ impl File {
         if self.is_dir {
             return format!("{}{}", self.service, self.path.join("/"));
         } else {
+            // Use lowercase ext in key for consistency if derived from filename
             format!(
                 "{}{}{}{}",
                 self.service,
                 self.path.join("/"),
-                self.ext,
+                self.ext, // Already lowercase from get_name_and_extension
                 self.size
             )
         }
@@ -429,6 +434,14 @@ impl File {
 struct DuplicateInfo {
     paths: Vec<String>, // List of full paths (service:path/to/file)
     size: u64,
+}
+
+// Helper struct for extension report
+#[derive(Debug, Clone)]
+struct ExtensionInfo {
+    extension: String,
+    count: u64,
+    total_size: u64,
 }
 
 // Files struct remains unchanged
@@ -895,6 +908,104 @@ impl Files {
         lines.join("\n")
     }
 
+    /// Generates the formatted extensions report string.
+    pub fn generate_extensions_report(&self) -> String {
+        println!("Generating extensions report...");
+        let mut extensions_map: HashMap<String, (u64, u64)> = HashMap::new(); // (count, total_size)
+        let mut total_file_count: u64 = 0;
+        let mut total_files_size: u64 = 0;
+
+        // Iterate over all files stored
+        for file in self.files.values() {
+            // Consider only files with non-negative size
+            if !file.is_dir && file.size >= 0 {
+                total_file_count += 1;
+                let file_size = file.size as u64;
+                total_files_size += file_size;
+
+                // Use lowercase extension or placeholder
+                let ext_key = if file.ext.is_empty() {
+                    NO_EXTENSION_KEY.to_string()
+                } else {
+                    file.ext.clone() // Already lowercase from get_name_and_extension
+                };
+
+                let entry = extensions_map.entry(ext_key).or_insert((0, 0));
+                entry.0 += 1; // Increment count
+                entry.1 += file_size; // Add size
+            }
+        }
+
+        if extensions_map.is_empty() {
+            return "No files found to generate extensions report.".to_string();
+        }
+
+        // Convert map to Vec for sorting
+        let mut sorted_extensions: Vec<ExtensionInfo> = extensions_map
+            .into_iter()
+            .map(|(ext, (count, size))| ExtensionInfo {
+                extension: ext,
+                count,
+                total_size: size,
+            })
+            .collect();
+
+        // Sort: Descending by Count, then Descending by Size, then Ascending by Extension Name
+        sorted_extensions.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count) // Primary: Count Desc
+                .then_with(|| b.total_size.cmp(&a.total_size)) // Secondary: Size Desc
+                .then_with(|| a.extension.cmp(&b.extension)) // Tertiary: Name Asc
+        });
+
+        let mut lines: Vec<String> = Vec::new();
+        // lines.push("--- File Extension Report ---".to_string());
+        lines.push(format!(
+            "Total Files Found: {} (Total Size: {})",
+            total_file_count,
+            human_bytes(total_files_size as f64)
+        ));
+        lines.push("-------------------------------------".to_string());
+        lines.push(format!(
+            "{:<15} | {:>12} | {:>15} | {:>8} | {:>8}",
+            "Extension", "File Count", "Total Size", "% Count", "% Size"
+        ));
+        lines.push("--------------------------------------------------------------------".to_string());
+
+
+        for info in sorted_extensions {
+            let count_percent = if total_file_count > 0 {
+                (info.count as f64 / total_file_count as f64) * 100.0
+            } else {
+                0.0
+            };
+            let size_percent = if total_files_size > 0 {
+                (info.total_size as f64 / total_files_size as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let ext_display = if info.extension == NO_EXTENSION_KEY {
+                info.extension.clone()
+            } else {
+                format!(".{}", info.extension) // Prepend dot for actual extensions
+            };
+
+
+            lines.push(format!(
+                "{:<15} | {:>12} | {:>15} | {:>7.2}% | {:>7.2}%",
+                ext_display,
+                info.count,
+                human_bytes(info.total_size as f64),
+                count_percent,
+                size_percent
+            ));
+        }
+
+        // lines.push("\n--- End of Report ---".to_string());
+        lines.join("\n")
+    }
+
     // Helper function to access roots_by_service keys
     pub fn get_service_names(&self) -> Vec<String> {
         self.roots_by_service.keys().cloned().collect()
@@ -962,16 +1073,19 @@ pub fn parse_rclone_lsjson(json_data: &str) -> Result<Vec<RawFile>, serde_json::
 }
 
 /// Processes the aggregated file data, builds the tree, finds duplicates (if requested),
-/// and writes the reports (tree/files, duplicates, size_used) to disk based on the chosen mode.
+/// and writes the reports (tree/files, duplicates, size_used, extensions) to disk based on the chosen mode.
+#[allow(clippy::too_many_arguments)] // Accept many args for this central function
 pub fn generate_reports(
     files_data: &mut Files,
-    output_division_mode: OutputMode, // New parameter
+    output_division_mode: OutputMode,
     enable_duplicates_report: bool,
-    output_dir: &Path,        // Changed from tree_output_path to directory path
-    tree_base_filename: &str, // Base name for single file mode, e.g., "files.txt"
-    folder_content_filename: &str, // Filename used inside folders in Folder mode, e.g., "files.txt"
+    enable_extensions_report: bool, // New parameter
+    output_dir: &Path,
+    tree_base_filename: &str,
+    folder_content_filename: &str,
     duplicates_output_filename: &str,
     size_output_filename: &str,
+    extensions_output_filename: &str, // New parameter
     folder_icon: &str,
     file_icon: &str,
     size_icon: &str,
@@ -988,12 +1102,10 @@ pub fn generate_reports(
     files_data.build_tree();
 
     // --- 2. Find and report duplicates (if enabled) ---
-    // Duplicates report is always a single file.
     let duplicates_output_path = output_dir.join(duplicates_output_filename);
     if enable_duplicates_report {
-        // TODO run this in parallel
-        files_data.find_duplicates();
-        let duplicates_report_string = files_data.generate_duplicates_output();
+        files_data.find_duplicates(); // Calculate duplicates
+        let duplicates_report_string = files_data.generate_duplicates_output(); // Generate report string
         fs::write(&duplicates_output_path, duplicates_report_string)?;
         println!(
             "Duplicates report written to '{}'",
@@ -1001,12 +1113,27 @@ pub fn generate_reports(
         );
     } else {
         println!("Duplicate detection skipped.");
-        // Optionally remove old file if skipping
         if duplicates_output_path.exists() {
             let _ = fs::remove_file(&duplicates_output_path);
-            // println!("Removed existing duplicates report file '{}'", duplicates_output_path.display());
         }
     }
+
+    // --- 2b. Generate and report extensions (if enabled) ---
+    let extensions_output_path = output_dir.join(extensions_output_filename);
+    if enable_extensions_report {
+        let extensions_report_string = files_data.generate_extensions_report(); // Generate report string
+        fs::write(&extensions_output_path, extensions_report_string)?;
+        println!(
+            "Extensions report written to '{}'",
+            extensions_output_path.display()
+        );
+    } else {
+        println!("Extensions report skipped.");
+        if extensions_output_path.exists() {
+            let _ = fs::remove_file(&extensions_output_path);
+        }
+    }
+
 
     // --- 3. Calculate sizes (needed for reports) ---
     let (grand_total_size, service_sizes) = files_data.calculate_all_sizes();
@@ -1074,7 +1201,7 @@ pub fn generate_reports(
 
                 // Construct filename like "output_dir/remote_name.txt"
                 // Sanitize service_name if necessary, but assume ok for now
-                let service_filename = format!("{MODE_REMOTES_SERVICE_PREFIX}{service_name} {tree_base_filename}");
+                let service_filename = format!("{MODE_REMOTES_SERVICE_PREFIX}{service_name} {tree_base_filename}.txt");
                 let service_output_path = output_dir.join(service_filename);
                 // fs::create_dir_all(&service_output_path.parent().unwrap())?; // Ensure output dir exists (already done)
                 fs::write(&service_output_path, service_string)?;
@@ -1138,7 +1265,6 @@ pub fn generate_reports(
                 for root_key in &sorted_root_keys {
                     // Use sorted keys
                     if let Some(root_file) = files_data.files.get(root_key) {
-                        // ******** CORRECTION START ********
                         // Call the recursive writer for this root item.
                         // The parent path required by write_fs_node_recursive is the directory
                         // where this root_file should be created/listed. For a root file
@@ -1153,7 +1279,6 @@ pub fn generate_reports(
                             date_icon,
                             folder_content_filename, // Pass the filename for directory listings
                         )?;
-                        // ******** CORRECTION END ********
                     } else {
                         eprintln!(
                             "Warning: Root key '{}' not found during Folder mode processing for service '{}'.",

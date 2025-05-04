@@ -1,3 +1,4 @@
+// src/main.rs
 use clap::Parser;
 use rayon::prelude::*;
 
@@ -14,6 +15,7 @@ const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used  in Single mode and as 
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
 const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
+const EXTENSIONS_OUTPUT_FILE_NAME: &str = "extensions.txt"; // New constant
 
 const REMOTE_ICON: &str = "☁️";
 const FOLDER_ICON: &str = "📁";
@@ -53,6 +55,15 @@ struct Args {
     #[arg(long, short = 'd', default_value_t = true, env = "CM_DUPLICATES")]
     duplicates: bool,
 
+    /// Enable the file extensions report.
+    #[arg(
+        long,
+        short = 'e', // New flag 'e'
+        default_value_t = true,
+        env = "CM_EXTENSIONS"
+    )]
+    extensions_report: bool,
+
     /// Enable the 'rclone about' report for remote sizes.
     #[arg(long, short = 'a', default_value_t = true, env = "CM_ABOUT")]
     about_report: bool,
@@ -81,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output mode: {:?}", args.output_mode);
     println!("Clean output directory: {}", args.clean_output);
     println!("Duplicates report enabled: {}", args.duplicates);
+    println!("Extensions report enabled: {}", args.extensions_report); // Log new flag
     println!("About report enabled: {}", args.about_report);
     println!("{SECTION_SEPARATOR}");
 
@@ -149,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("Found {} remotes: {:?}", remote_names.len(), remote_names);
-    println!();
+    println!("{SECTION_SEPARATOR}");
 
     // --- 3. Process Remotes in Parallel ---
     println!("Processing remotes in parallel");
@@ -243,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let loop_duration = loop_start_time.elapsed();
     println!(
-        "Finished parallel lsjson processing phase in {:.2}s.",
+        "Finished parallel processing phase in {:.2}s.",
         loop_duration.as_secs_f32()
     );
     println!("{SECTION_SEPARATOR}");
@@ -292,7 +304,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else {
         // --- Generate Standard Reports (Only if files_collection is not empty) ---
-        println!("Generating standard reports (tree/files, size_used, duplicates)...");
+        println!("Generating standard reports (tree/files, size_used, duplicates, extensions)...");
         let report_start_time = Instant::now();
 
         // Convert the CLI enum variant to the lib's enum variant
@@ -302,11 +314,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut files_collection,
             output_division_mode_lib, // Pass chosen division mode
             args.duplicates,
-            &output_dir,           // Pass the output directory PathBuf
-            TREE_OUTPUT_FILE_NAME, // Pass base name for Single mode
-            TREE_OUTPUT_FILE_NAME, // Pass base name for Folder mode content files
+            args.extensions_report, // Pass extensions flag
+            &output_dir,            // Pass the output directory PathBuf
+            TREE_OUTPUT_FILE_NAME,  // Pass base name for Single mode
+            TREE_OUTPUT_FILE_NAME,  // Pass base name for Folder mode content files
             DUPLICATES_OUTPUT_FILE_NAME,
             SIZE_OUTPUT_FILE_NAME,
+            EXTENSIONS_OUTPUT_FILE_NAME, // Pass extensions filename
             FOLDER_ICON,
             FILE_ICON,
             SIZE_ICON,
@@ -341,6 +355,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!(
                         "  Duplicates report: {}",
                         output_dir.join(DUPLICATES_OUTPUT_FILE_NAME).display()
+                    );
+                }
+                if args.extensions_report {
+                    // Check flag before printing path
+                    println!(
+                        "  Extensions report: {}",
+                        output_dir.join(EXTENSIONS_OUTPUT_FILE_NAME).display()
                     );
                 }
             }
