@@ -53,3 +53,7 @@ jobs:
           # Your GoReleaser Pro key.
           # Only needed if you're using the 'goreleaser-pro' distribution.
           # GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
+
+# global after hooks
+after:
+  - cmd: "cargo publish {{ if .IsSnapshot }}--dry-run{{ end }} --quiet --no-verify"
