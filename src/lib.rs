@@ -1117,16 +1117,19 @@ impl Files {
 /// Generates the HTML content for the ECharts treemap visualization.
 fn generate_echarts_html(
     data: &[EChartsTreemapNode],
-    title: &str,
+    title: &str, // Original title passed from main.rs
 ) -> Result<String, serde_json::Error> {
     // Serialize the data structure to a JSON string
     let data_json = serde_json::to_string(data)?;
 
-    // Define a color palette (adjust colors as needed)
+    // Define a color palette TODO: check / extend
     let colors_json = serde_json::to_string(&[
         "#5470c6", "#91cc75", "#fac858", "#ee6666", "#73c0de",
         "#3ba272", "#fc8452", "#9a60b4", "#ea7ccc"
     ])?;
+
+    // Define the specific title text required
+    let specific_title = "Cloud Storage Treemap - Hover over items to see more info. Click to drill down.";
 
 
     // Create the HTML structure with embedded JavaScript
@@ -1141,7 +1144,7 @@ fn generate_echarts_html(
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <style>
         html, body {{ height: 100%; margin: 0; padding: 0; overflow: hidden; }}
-        #main {{ height: 100%; width: 100%; background-color: #f0f0f0; /* Optional: background */ }}
+        #main {{ height: 100%; width: 100%; background-color: #000000; }}
         .tooltip-title {{ font-weight: bold; margin-bottom: 5px; }}
     </style>
 </head>
@@ -1149,9 +1152,7 @@ fn generate_echarts_html(
     <div id="main"></div>
     <script type="text/javascript">
         var chartDom = document.getElementById('main');
-        // Use 'dark' theme for contrast similar to the example, or remove for default light theme
-        // var myChart = echarts.init(chartDom, 'dark');
-        var myChart = echarts.init(chartDom); // Use default theme
+        var myChart = echarts.init(chartDom, 'dark'); // Use 'dark' theme
         var option;
 
         var data = {data_json}; // Inject the serialized Rust data here
@@ -1170,16 +1171,14 @@ fn generate_echarts_html(
 
         option = {{
             title: {{
-                text: '{title}',
+                text: '{specific_title}', // Use the specific title text
                 left: 'center',
-                // textStyle: {{ color: '#fff' }} // Adjust if using dark theme
+                textStyle: {{ color: '#fff' }} // White text for dark theme
             }},
             // Assign the color palette to the series
             color: colors,
             tooltip: {{
                 formatter: function (info) {{
-                    // info.data contains the original data node {{name: ..., value: ...}}
-                    // info.treePathInfo gives the path from root
                     var value = info.value;
                     var treePathInfo = info.treePathInfo;
                     var treePath = [];
@@ -1194,10 +1193,12 @@ fn generate_echarts_html(
             }},
             series: [
                 {{
-                    name: 'Cloud Storage', // This name appears in the tooltip if not customized fully
+                    name: 'Cloud Storage',
                     type: 'treemap',
                     roam: true, // Enable panning and zooming
                     nodeClick: 'zoomToNode', // Zoom when clicking nodes
+                    squareRatio: 1.0, // Set square ratio
+                    colorSaturation: [0.5, 0.9], // Set color saturation range
                     breadcrumb: {{ // Show navigation path at the bottom
                         show: true,
                         height: 22,
@@ -1205,53 +1206,45 @@ fn generate_echarts_html(
                         bottom: '5%', // Position breadcrumb lower
                          itemStyle: {{
                             textStyle: {{
-                                color: '#333' // Breadcrumb text color (adjust if theme changes)
+                                color: '#fff' // White breadcrumb text for dark theme
+                            }}
+                         }},
+                         emphasis: {{ // Style when hovering over breadcrumb parts
+                            itemStyle: {{
+                                textStyle: {{ color: '#ddd' }} // Slightly dimmer white on hover
                             }}
                          }}
-                        // Tweak breadcrumb appearance if needed
                     }},
-                    label: {{ // Default label settings (applied if not overridden by levels)
-                        show: true,
-                        position: 'inside', // Try to place label inside the block
+                    label: {{ // Default label settings
+                        show: false, // Hide labels by default
+                        // Other settings kept from example but inactive due to show: false
+                        position: 'inside',
                         formatter: function (params) {{
-                            // Show name and formatted size
                             return params.name + '\n' + formatBytes(params.value);
                          }},
-                         color: '#fff', // White text for better contrast on colors
-                         fontSize: 10,
-                         fontWeight: 'normal',
-                         overflow: 'truncate', // Truncate long labels if they overflow
-                         // Use rich text for potential future styling: https://echarts.apache.org/en/option.html#series-treemap.label.rich
+                         color: '#fff',
+                         overflow: 'truncate',
                     }},
                     upperLabel: {{ // Configuration for labels of parent nodes when drilled down
-                        show: true,
-                        height: 25, // Make parent label area slightly larger
-                        formatter: '{{b}}', // Show only name for parent levels
-                         color: '#fff',
-                         fontSize: 12,
-                         fontWeight: 'bold',
-                         textShadowColor: 'rgba(0, 0, 0, 0.3)', // Add subtle shadow for readability
-                         textShadowBlur: 2
+                        show: false, // Hide upper labels
+                        // Other settings kept from example but inactive due to show: false
+                        color: '#fff',
                     }},
                     itemStyle: {{ // Default item style
-                        borderColor: '#fff', // White border to separate blocks
-                        borderWidth: 1,
-                        gapWidth: 1 // Small gap between blocks
+                        borderColor: '#000', // Black border to blend with background
+                        borderWidth: 0.5, // Thin border
+                        gapWidth: 0.0, // No gap
                     }},
-                    levels: [ // Customize styles per level
-                        // Level 0: Root node (usually invisible, set by ECharts) - skip customization or make transparent
-                        {{ itemStyle: {{ borderColor: '#fff', borderWidth: 0, gapWidth: 1 }} }}, // Style for Services (depth 1)
-                        {{
-                           //colorSaturation: [0.35, 0.5], // Reduce saturation for level 2 nodes
-                           itemStyle: {{ borderColor: '#bbb', gapWidth: 1, borderWidth: 1 }}, // Slightly different border
-                           label: {{ fontSize: 10, fontWeight: 'normal' }} // Adjust label style for this level if needed
+                    levels: [ // Customize styles per level - matching the target example
+                        {{ // Level 0: Service level grouping (ECharts depth 1)
+                            itemStyle: {{ borderColor: '#ff6361', borderWidth: 15, borderRadius: 15, gapWidth: 0 }}
                         }},
-                        {{
-                           //colorSaturation: [0.3, 0.45], // Further reduce saturation for level 3 nodes
-                           itemStyle: {{ borderColor: '#999', gapWidth: 0, borderWidth: 1 }}, // Thinner/different border, no gap
-                           label: {{ fontSize: 9 }}
+                        {{ // Level 1: First level folders/files within a service (ECharts depth 2)
+                            itemStyle: {{ borderColor: '#fff', borderWidth: 15, borderRadius: 15, gapWidth: 0 }}
                         }},
-                        // Add more level styles if the hierarchy is deeper
+                         // Level 2 and deeper will use the default itemStyle (thin black border, no gap)
+                         // We can add more level definitions here if needed, e.g.,
+                         // {{ itemStyle: {{ borderColor: '#555', borderWidth: 1, gapWidth: 0 }} }}
                     ],
                     data: data // Use the injected data
                 }}
@@ -1266,7 +1259,8 @@ fn generate_echarts_html(
     </script>
 </body>
 </html>"#,
-        title = title,
+        title = title, // Use original title for <title> tag
+        specific_title = specific_title, // Use specific text for chart title
         data_json = data_json,
         colors_json = colors_json // Pass colors JSON into the format string
     ))
@@ -1542,7 +1536,7 @@ pub fn generate_reports(
         // Use calculated service_sizes and size_cache
         match files_data.generate_echarts_data(&size_cache, &service_sizes) {
             echarts_data => {
-                match generate_echarts_html(&echarts_data, "Cloud Storage Treemap") {
+                match generate_echarts_html(&echarts_data, "Cloud Storage Treemap") { // Pass original title here
                     Ok(html_content) => {
                         if let Err(e) = fs::write(&treemap_output_path, html_content) {
                             eprintln!(
