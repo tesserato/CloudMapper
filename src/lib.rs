@@ -1021,7 +1021,18 @@ impl Files {
                     let mut children_nodes: Vec<EChartsTreemapNode> = Vec::new();
                     // Sort children keys for deterministic output (optional but good)
                     let mut sorted_children_keys: Vec<&String> = file.children_keys.iter().collect();
-                    sorted_children_keys.sort(); // Simple alphabetical sort for keys
+                    // Sort: Dirs first, then Files, then alphabetically by display name
+                    sorted_children_keys.sort_by(|a_key, b_key| {
+                        match (all_files.get(*a_key), all_files.get(*b_key)) {
+                            (Some(a), Some(b)) => a
+                                .is_dir
+                                .cmp(&b.is_dir) // Dirs before files
+                                .reverse() // reverse bool comparison
+                                .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                            _ => Ordering::Equal, // Should not happen if keys are valid
+                        }
+                    });
+
 
                     for child_key in sorted_children_keys {
                         if let Some(child_node) =
@@ -1063,9 +1074,19 @@ impl Files {
                 .cloned()
                 .unwrap_or_default();
 
-            // Sort root keys for deterministic output
+            // Sort root keys for deterministic output (Dirs first, then files, then alpha)
             let mut sorted_root_keys = root_keys;
-            sorted_root_keys.sort(); // Simple alphabetical sort
+             sorted_root_keys.sort_by(|a_key, b_key| {
+                 match (self.files.get(a_key), self.files.get(b_key)) {
+                    (Some(a), Some(b)) => a
+                        .is_dir
+                        .cmp(&b.is_dir) // Dirs before files
+                        .reverse() // reverse bool comparison
+                        .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                    _ => Ordering::Equal, // Should not happen if keys are valid
+                 }
+             });
+
 
             for root_key in &sorted_root_keys {
                 if let Some(root_node) =
@@ -1101,6 +1122,13 @@ fn generate_echarts_html(
     // Serialize the data structure to a JSON string
     let data_json = serde_json::to_string(data)?;
 
+    // Define a color palette (adjust colors as needed)
+    let colors_json = serde_json::to_string(&[
+        "#5470c6", "#91cc75", "#fac858", "#ee6666", "#73c0de",
+        "#3ba272", "#fc8452", "#9a60b4", "#ea7ccc"
+    ])?;
+
+
     // Create the HTML structure with embedded JavaScript
     // Using a CDN for ECharts library
     Ok(format!(
@@ -1113,89 +1141,118 @@ fn generate_echarts_html(
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <style>
         html, body {{ height: 100%; margin: 0; padding: 0; overflow: hidden; }}
-        #main {{ height: 100%; width: 100%; }}
+        #main {{ height: 100%; width: 100%; background-color: #f0f0f0; /* Optional: background */ }}
+        .tooltip-title {{ font-weight: bold; margin-bottom: 5px; }}
     </style>
 </head>
 <body>
     <div id="main"></div>
     <script type="text/javascript">
         var chartDom = document.getElementById('main');
-        var myChart = echarts.init(chartDom);
+        // Use 'dark' theme for contrast similar to the example, or remove for default light theme
+        // var myChart = echarts.init(chartDom, 'dark');
+        var myChart = echarts.init(chartDom); // Use default theme
         var option;
 
         var data = {data_json}; // Inject the serialized Rust data here
+        var colors = {colors_json}; // Inject the color palette
 
-        // Function to format bytes into human-readable format (similar to human_bytes)
+        // Function to format bytes into human-readable format (KiB, MiB, GiB)
         function formatBytes(bytes, decimals = 2) {{
             if (!+bytes) return '0 Bytes'
             const k = 1024
             const dm = decimals < 0 ? 0 : decimals
             const sizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB']
-            const i = Math.floor(Math.log(bytes) / Math.log(k))
+            // Handle potential floating point inaccuracies for log(1024)
+            const i = Math.max(0, Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k))));
             return `${{parseFloat((bytes / Math.pow(k, i)).toFixed(dm))}} ${{sizes[i]}}`
         }}
 
         option = {{
             title: {{
                 text: '{title}',
-                left: 'center'
+                left: 'center',
+                // textStyle: {{ color: '#fff' }} // Adjust if using dark theme
             }},
+            // Assign the color palette to the series
+            color: colors,
             tooltip: {{
                 formatter: function (info) {{
+                    // info.data contains the original data node {{name: ..., value: ...}}
+                    // info.treePathInfo gives the path from root
                     var value = info.value;
                     var treePathInfo = info.treePathInfo;
                     var treePath = [];
+                    // Start from index 1 to skip the invisible root node ECharts adds
                     for (var i = 1; i < treePathInfo.length; i++) {{
                         treePath.push(treePathInfo[i].name);
                     }}
-                    return [
-                        '<div class="tooltip-title">' + treePath.join('/') + '</div>',
-                        'Size: ' + formatBytes(value)
-                    ].join('');
+                    // Use HTML for better formatting in tooltip
+                    return '<div class="tooltip-title">' + echarts.format.encodeHTML(treePath.join('/')) + '</div>'
+                         + 'Size: ' + formatBytes(value);
                 }}
             }},
             series: [
                 {{
-                    name: 'Cloud Storage',
+                    name: 'Cloud Storage', // This name appears in the tooltip if not customized fully
                     type: 'treemap',
-                    visibleMin: 300, // Minimum square area (pixels) to show node text label
-                    label: {{
-                        show: true,
-                        formatter: '{{b}}\n{{c}}', // Display name and value (size)
-                         formatter: function (params) {{
-                            // Show name and formatted size in the label
-                            return params.name + '\n' + formatBytes(params.value);
-                         }},
-                         fontSize: 10,
-                         color: '#fff', // Ensure text is visible on varied backgrounds
-                         ellipsis: true, // Use ellipsis for long names
-                    }},
-                    upperLabel: {{ // Configuration for labels of parent nodes when drilled down
-                        show: true,
-                        height: 30,
-                        formatter: '{{b}}', // Show only name for parent levels
-                         color: '#fff',
-                    }},
-                    itemStyle: {{
-                        borderColor: '#fff'
-                    }},
-                    levels: [ // Customize levels if needed
-                        {{ itemStyle: {{ borderColor: '#777', borderWidth: 0, gapWidth: 1 }} }}, // Root level style
-                        {{ itemStyle: {{ borderColor: '#555', gapWidth: 1 }} }},
-                        {{ itemStyle: {{ borderColor: '#333', gapWidth: 1 }} }},
-                        // Add more level styles if necessary
-                    ],
+                    roam: true, // Enable panning and zooming
+                    nodeClick: 'zoomToNode', // Zoom when clicking nodes
                     breadcrumb: {{ // Show navigation path at the bottom
                         show: true,
                         height: 22,
                         left: 'center',
-                        bottom: '10',
+                        bottom: '5%', // Position breadcrumb lower
                          itemStyle: {{
                             textStyle: {{
-                                color: '#333' // Adjust breadcrumb text color if needed
+                                color: '#333' // Breadcrumb text color (adjust if theme changes)
                             }}
                          }}
+                        // Tweak breadcrumb appearance if needed
                     }},
+                    label: {{ // Default label settings (applied if not overridden by levels)
+                        show: true,
+                        position: 'inside', // Try to place label inside the block
+                        formatter: function (params) {{
+                            // Show name and formatted size
+                            return params.name + '\n' + formatBytes(params.value);
+                         }},
+                         color: '#fff', // White text for better contrast on colors
+                         fontSize: 10,
+                         fontWeight: 'normal',
+                         overflow: 'truncate', // Truncate long labels if they overflow
+                         // Use rich text for potential future styling: https://echarts.apache.org/en/option.html#series-treemap.label.rich
+                    }},
+                    upperLabel: {{ // Configuration for labels of parent nodes when drilled down
+                        show: true,
+                        height: 25, // Make parent label area slightly larger
+                        formatter: '{{b}}', // Show only name for parent levels
+                         color: '#fff',
+                         fontSize: 12,
+                         fontWeight: 'bold',
+                         textShadowColor: 'rgba(0, 0, 0, 0.3)', // Add subtle shadow for readability
+                         textShadowBlur: 2
+                    }},
+                    itemStyle: {{ // Default item style
+                        borderColor: '#fff', // White border to separate blocks
+                        borderWidth: 1,
+                        gapWidth: 1 // Small gap between blocks
+                    }},
+                    levels: [ // Customize styles per level
+                        // Level 0: Root node (usually invisible, set by ECharts) - skip customization or make transparent
+                        {{ itemStyle: {{ borderColor: '#fff', borderWidth: 0, gapWidth: 1 }} }}, // Style for Services (depth 1)
+                        {{
+                           //colorSaturation: [0.35, 0.5], // Reduce saturation for level 2 nodes
+                           itemStyle: {{ borderColor: '#bbb', gapWidth: 1, borderWidth: 1 }}, // Slightly different border
+                           label: {{ fontSize: 10, fontWeight: 'normal' }} // Adjust label style for this level if needed
+                        }},
+                        {{
+                           //colorSaturation: [0.3, 0.45], // Further reduce saturation for level 3 nodes
+                           itemStyle: {{ borderColor: '#999', gapWidth: 0, borderWidth: 1 }}, // Thinner/different border, no gap
+                           label: {{ fontSize: 9 }}
+                        }},
+                        // Add more level styles if the hierarchy is deeper
+                    ],
                     data: data // Use the injected data
                 }}
             ]
@@ -1210,9 +1267,11 @@ fn generate_echarts_html(
 </body>
 </html>"#,
         title = title,
-        data_json = data_json
+        data_json = data_json,
+        colors_json = colors_json // Pass colors JSON into the format string
     ))
 }
+
 
 // --- Public Functions ---
 pub fn run_command(executable: &str, args: &[&str]) -> Result<Output, io::Error> {
@@ -1427,16 +1486,18 @@ pub fn generate_reports(
 
                 // Need to sort roots here too: Dirs first, then alpha
                 let mut sorted_root_keys = root_keys;
-                sorted_root_keys.sort_by(|a_key, b_key| {
+                 sorted_root_keys.sort_by(|a_key, b_key| {
                     match (files_data.files.get(a_key), files_data.files.get(b_key)) {
                         (Some(a), Some(b)) => a
                             .is_dir
-                            .cmp(&b.is_dir)
-                            .reverse()
-                            .then_with(|| a.get_display_name().cmp(&b.get_display_name())),
+                            .cmp(&b.is_dir) // Dirs first
+                            .reverse()      // Reverse bool comparison
+                            .then_with(|| a.get_display_name().cmp(&b.get_display_name())), // Then alpha
                         _ => Ordering::Equal, // Simplified error handling
                     }
-                });
+                 });
+
+
                 println!(
                     "  - Processing remote '{}' (output root: '{}')...",
                     service_name,
@@ -1444,16 +1505,24 @@ pub fn generate_reports(
                 );
                 for root_key in &sorted_root_keys {
                     if let Some(root_file) = files_data.files.get(root_key) {
-                        root_file.write_fs_node_recursive(
-                            &service_dir_path,
-                            &files_data.files,
-                            &size_cache,
-                            folder_icon,
-                            file_icon,
-                            size_icon,
-                            date_icon,
-                            folder_content_filename,
-                        )?;
+                        // Skip writing individual files at the root of the service folder structure output
+                        // only process directories recursively
+                        if root_file.is_dir {
+                            root_file.write_fs_node_recursive(
+                                &service_dir_path, // Base path is the service directory itself
+                                &files_data.files,
+                                &size_cache,
+                                folder_icon,
+                                file_icon,
+                                size_icon,
+                                date_icon,
+                                folder_content_filename,
+                            )?;
+                        } else {
+                             // Optionally create a file representing the root file directly in the service dir
+                             // Or just list it within a root contents file (not implemented here)
+                             // Current logic only creates dirs and their content files.
+                        }
                     } else {
                         eprintln!("Warning: Root key '{}' not found during Folder mode processing for service '{}'.", root_key, service_name);
                     }
@@ -1470,6 +1539,7 @@ pub fn generate_reports(
     let treemap_output_path = output_dir.join(treemap_output_filename);
     if enable_html_treemap {
         println!("Generating HTML treemap visualization...");
+        // Use calculated service_sizes and size_cache
         match files_data.generate_echarts_data(&size_cache, &service_sizes) {
             echarts_data => {
                 match generate_echarts_html(&echarts_data, "Cloud Storage Treemap") {
