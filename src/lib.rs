@@ -388,6 +388,16 @@ struct ExtensionInfo {
     total_size: u64,
 }
 
+// --- ECharts Data Structures ---
+#[derive(Serialize, Debug)]
+struct EChartsTreemapNode {
+    name: String,
+    value: u64, // Size in bytes
+    // itemStyle can be added here if needed for specific node colors
+    #[serde(skip_serializing_if = "Option::is_none")]
+    children: Option<Vec<EChartsTreemapNode>>,
+}
+
 // Files struct remains unchanged
 #[derive(Debug)]
 pub struct Files {
@@ -973,6 +983,235 @@ impl Files {
     pub fn get_service_names(&self) -> Vec<String> {
         self.roots_by_service.keys().cloned().collect()
     }
+
+    /// Generates data suitable for ECharts treemap visualization.
+    fn generate_echarts_data(
+        &self,
+        size_cache: &HashMap<String, u64>,
+        service_sizes: &HashMap<String, u64>,
+    ) -> Vec<EChartsTreemapNode> {
+        println!("Generating data for ECharts treemap...");
+        let mut treemap_data: Vec<EChartsTreemapNode> = Vec::new();
+
+        // Recursive helper to build the node structure
+        fn build_echarts_node_recursive(
+            key: &str,
+            all_files: &HashMap<String, File>,
+            size_cache: &HashMap<String, u64>,
+        ) -> Option<EChartsTreemapNode> {
+            if let Some(file) = all_files.get(key) {
+                let name = file.get_display_name();
+                // Use pre-calculated size from cache, default to 0 if missing (should not happen if cache is complete)
+                let size = size_cache.get(key).cloned().unwrap_or(0);
+
+                if !file.is_dir {
+                    // It's a file, return a leaf node
+                    // Only include if size > 0 for treemap visual clarity? Optional.
+                    if size > 0 {
+                        Some(EChartsTreemapNode {
+                            name,
+                            value: size,
+                            children: None,
+                        })
+                    } else {
+                        None // Exclude 0-byte files from treemap visualization
+                    }
+                } else {
+                    // It's a directory, process children recursively
+                    let mut children_nodes: Vec<EChartsTreemapNode> = Vec::new();
+                    // Sort children keys for deterministic output (optional but good)
+                    let mut sorted_children_keys: Vec<&String> = file.children_keys.iter().collect();
+                    sorted_children_keys.sort(); // Simple alphabetical sort for keys
+
+                    for child_key in sorted_children_keys {
+                        if let Some(child_node) =
+                            build_echarts_node_recursive(child_key, all_files, size_cache)
+                        {
+                            children_nodes.push(child_node);
+                        }
+                    }
+
+                    // Only include the directory node if it has size OR contains children with size
+                    if size > 0 || !children_nodes.is_empty() {
+                         Some(EChartsTreemapNode {
+                            name,
+                            value: size, // Use the pre-calculated size of the directory
+                            children: if children_nodes.is_empty() { None } else { Some(children_nodes) },
+                        })
+                    } else {
+                        None // Exclude empty directories from treemap
+                    }
+                }
+            } else {
+                eprintln!(
+                    "Warning: Key '{}' not found during ECharts data generation.",
+                    key
+                );
+                None
+            }
+        }
+
+        // Sort service names for consistent output order
+        let mut sorted_service_names: Vec<&String> = self.roots_by_service.keys().collect();
+        sorted_service_names.sort();
+
+        for service_name in sorted_service_names {
+            let mut service_children: Vec<EChartsTreemapNode> = Vec::new();
+            let root_keys = self
+                .roots_by_service
+                .get(service_name)
+                .cloned()
+                .unwrap_or_default();
+
+            // Sort root keys for deterministic output
+            let mut sorted_root_keys = root_keys;
+            sorted_root_keys.sort(); // Simple alphabetical sort
+
+            for root_key in &sorted_root_keys {
+                if let Some(root_node) =
+                    build_echarts_node_recursive(root_key, &self.files, size_cache)
+                {
+                    service_children.push(root_node);
+                }
+            }
+
+            // Get total service size from the precalculated map
+            let service_total_size = service_sizes.get(service_name).cloned().unwrap_or(0);
+
+            // Add the service node if it has content or size
+            if service_total_size > 0 || !service_children.is_empty() {
+                 treemap_data.push(EChartsTreemapNode {
+                    name: service_name.clone(),
+                    value: service_total_size, // Use calculated total size for the service node
+                    children: if service_children.is_empty() { None } else { Some(service_children) },
+                });
+            }
+        }
+
+        println!("ECharts data generation complete.");
+        treemap_data
+    }
+}
+
+/// Generates the HTML content for the ECharts treemap visualization.
+fn generate_echarts_html(
+    data: &[EChartsTreemapNode],
+    title: &str,
+) -> Result<String, serde_json::Error> {
+    // Serialize the data structure to a JSON string
+    let data_json = serde_json::to_string(data)?;
+
+    // Create the HTML structure with embedded JavaScript
+    // Using a CDN for ECharts library
+    Ok(format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        html, body {{ height: 100%; margin: 0; padding: 0; overflow: hidden; }}
+        #main {{ height: 100%; width: 100%; }}
+    </style>
+</head>
+<body>
+    <div id="main"></div>
+    <script type="text/javascript">
+        var chartDom = document.getElementById('main');
+        var myChart = echarts.init(chartDom);
+        var option;
+
+        var data = {data_json}; // Inject the serialized Rust data here
+
+        // Function to format bytes into human-readable format (similar to human_bytes)
+        function formatBytes(bytes, decimals = 2) {{
+            if (!+bytes) return '0 Bytes'
+            const k = 1024
+            const dm = decimals < 0 ? 0 : decimals
+            const sizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB']
+            const i = Math.floor(Math.log(bytes) / Math.log(k))
+            return `${{parseFloat((bytes / Math.pow(k, i)).toFixed(dm))}} ${{sizes[i]}}`
+        }}
+
+        option = {{
+            title: {{
+                text: '{title}',
+                left: 'center'
+            }},
+            tooltip: {{
+                formatter: function (info) {{
+                    var value = info.value;
+                    var treePathInfo = info.treePathInfo;
+                    var treePath = [];
+                    for (var i = 1; i < treePathInfo.length; i++) {{
+                        treePath.push(treePathInfo[i].name);
+                    }}
+                    return [
+                        '<div class="tooltip-title">' + treePath.join('/') + '</div>',
+                        'Size: ' + formatBytes(value)
+                    ].join('');
+                }}
+            }},
+            series: [
+                {{
+                    name: 'Cloud Storage',
+                    type: 'treemap',
+                    visibleMin: 300, // Minimum square area (pixels) to show node text label
+                    label: {{
+                        show: true,
+                        formatter: '{{b}}\n{{c}}', // Display name and value (size)
+                         formatter: function (params) {{
+                            // Show name and formatted size in the label
+                            return params.name + '\n' + formatBytes(params.value);
+                         }},
+                         fontSize: 10,
+                         color: '#fff', // Ensure text is visible on varied backgrounds
+                         ellipsis: true, // Use ellipsis for long names
+                    }},
+                    upperLabel: {{ // Configuration for labels of parent nodes when drilled down
+                        show: true,
+                        height: 30,
+                        formatter: '{{b}}', // Show only name for parent levels
+                         color: '#fff',
+                    }},
+                    itemStyle: {{
+                        borderColor: '#fff'
+                    }},
+                    levels: [ // Customize levels if needed
+                        {{ itemStyle: {{ borderColor: '#777', borderWidth: 0, gapWidth: 1 }} }}, // Root level style
+                        {{ itemStyle: {{ borderColor: '#555', gapWidth: 1 }} }},
+                        {{ itemStyle: {{ borderColor: '#333', gapWidth: 1 }} }},
+                        // Add more level styles if necessary
+                    ],
+                    breadcrumb: {{ // Show navigation path at the bottom
+                        show: true,
+                        height: 22,
+                        left: 'center',
+                        bottom: '10',
+                         itemStyle: {{
+                            textStyle: {{
+                                color: '#333' // Adjust breadcrumb text color if needed
+                            }}
+                         }}
+                    }},
+                    data: data // Use the injected data
+                }}
+            ]
+        }};
+
+        myChart.setOption(option);
+
+        // Make chart responsive
+        window.addEventListener('resize', myChart.resize);
+
+    </script>
+</body>
+</html>"#,
+        title = title,
+        data_json = data_json
+    ))
 }
 
 // --- Public Functions ---
@@ -1039,12 +1278,14 @@ pub fn generate_reports(
     output_division_mode: OutputMode,
     enable_duplicates_report: bool,
     enable_extensions_report: bool,
+    enable_html_treemap: bool, // New flag
     output_dir: &Path,
     tree_base_filename: &str,
     folder_content_filename: &str,
     duplicates_output_filename: &str,
     size_output_filename: &str,
     extensions_output_filename: &str,
+    treemap_output_filename: &str, // New filename
     folder_icon: &str,
     file_icon: &str,
     size_icon: &str,
@@ -1224,6 +1465,42 @@ pub fn generate_reports(
             );
         }
     }
+
+    // --- 6. Generate HTML Treemap Report (if enabled) ---
+    let treemap_output_path = output_dir.join(treemap_output_filename);
+    if enable_html_treemap {
+        println!("Generating HTML treemap visualization...");
+        match files_data.generate_echarts_data(&size_cache, &service_sizes) {
+            echarts_data => {
+                match generate_echarts_html(&echarts_data, "Cloud Storage Treemap") {
+                    Ok(html_content) => {
+                        if let Err(e) = fs::write(&treemap_output_path, html_content) {
+                            eprintln!(
+                                "Error writing HTML treemap report to '{}': {}",
+                                treemap_output_path.display(),
+                                e
+                            );
+                            // Consider returning an error here if this report is critical
+                        } else {
+                            println!(
+                                "HTML treemap report written to '{}'",
+                                treemap_output_path.display()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error generating ECharts HTML content: {}", e);
+                    }
+                }
+            }
+        }
+    } else {
+        println!("HTML treemap visualization skipped.");
+        if treemap_output_path.exists() {
+            let _ = fs::remove_file(&treemap_output_path);
+        }
+    }
+
 
     println!("Reports generation finished.");
     Ok(())

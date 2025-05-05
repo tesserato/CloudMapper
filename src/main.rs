@@ -9,11 +9,12 @@ use std::time::Instant;
 use cloudmapper::{AboutResult, OutputMode, RcloneAboutInfo};
 
 // --- Configuration Constants (Base Filenames) ---
-const TREE_OUTPUT_FILE_NAME: &str = "files.txt";
+const TREE_OUTPUT_FILE_NAME: &str = "files.txt"; // Used in Single/Remote modes and as Folder content filename
 const DUPLICATES_OUTPUT_FILE_NAME: &str = "duplicates.txt";
 const SIZE_OUTPUT_FILE_NAME: &str = "size_used.txt";
 const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
 const EXTENSIONS_OUTPUT_FILE_NAME: &str = "extensions.txt";
+const TREEMAP_OUTPUT_FILE_NAME: &str = "treemap.html"; // New filename for HTML treemap
 
 const REMOTE_ICON: &str = "☁️";
 const FOLDER_ICON: &str = "📁";
@@ -62,6 +63,10 @@ struct Args {
     #[arg(long, short = 'a', default_value_t = true, env = "CM_ABOUT")]
     about_report: bool,
 
+    /// Enable the HTML treemap visualization report.
+    #[arg(long, short = 't', default_value_t = true, env = "CM_HTML_TREEMAP")]
+    html_treemap: bool, // New flag
+
     /// Clean the output directory before generating reports.
     #[arg(long, short = 'k', default_value_t = true, env = "CM_CLEAN_OUTPUT")]
     clean_output: bool,
@@ -89,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Duplicates report enabled: {}", args.duplicates);
     println!("Extensions report enabled: {}", args.extensions_report);
     println!("About report enabled: {}", args.about_report);
+    println!("HTML Treemap report enabled: {}", args.html_treemap); // Print new flag status
     println!("{SECTION_SEPARATOR}");
 
     println!("Starting rclone data processing...");
@@ -271,22 +277,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Proceeding with 'about' report generation only.");
         }
     } else {
-        // Generate Standard Reports (tree/files, size_used, duplicates, extensions)
+        // Generate Standard Reports (tree/files, size_used, duplicates, extensions, treemap)
         println!("Generating standard reports...");
         let report_start_time = Instant::now();
-        // let output_division_mode_lib: OutputMode = args.output_mode.into();
 
         match cloudmapper::generate_reports(
             &mut files_collection,
             args.output_mode,
             args.duplicates,
             args.extensions_report,
+            args.html_treemap, // Pass the new flag
             &output_dir,
             TREE_OUTPUT_FILE_NAME,
-            TREE_OUTPUT_FILE_NAME, // Use same base name for folder content
+            TREE_OUTPUT_FILE_NAME, // Use same base name for folder content filename
             DUPLICATES_OUTPUT_FILE_NAME,
             SIZE_OUTPUT_FILE_NAME,
             EXTENSIONS_OUTPUT_FILE_NAME,
+            TREEMAP_OUTPUT_FILE_NAME, // Pass the new filename
             FOLDER_ICON,
             FILE_ICON,
             SIZE_ICON,
@@ -323,6 +330,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!(
                         "  Extensions report: {}",
                         output_dir.join(EXTENSIONS_OUTPUT_FILE_NAME).display()
+                    );
+                }
+                if args.html_treemap { // Print path for treemap if generated
+                    println!(
+                        "  HTML Treemap report: {}",
+                        output_dir.join(TREEMAP_OUTPUT_FILE_NAME).display()
                     );
                 }
             }
