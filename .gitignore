@@ -3,3 +3,7 @@ rclone_json_output
 cloud
 codebase.md
 excluded_paths.txt
+# Added by goreleaser init:
+dist/
+.intentionally-empty-file.o
+target/
