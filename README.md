@@ -1,44 +1,24 @@
-# CloudMapper ☁️ 🗺️
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/YOUR_USERNAME/cloudmapper/rust.yml?branch=main)](https://github.com/YOUR_USERNAME/cloudmapper/actions) <!-- TODO: Replace YOUR_USERNAME -->
-[![Crates.io](https://img.shields.io/crates/v/cloudmapper.svg)](https://crates.io/crates/cloudmapper) <!-- TODO: Update if published -->
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://opensource.org/licenses/MIT)
+# CloudMapper: Open-source tool to map and visualize your cloud storage landscape.
 
-CloudMapper is a command-line tool that leverages `rclone` to analyse and visualize the contents and usage of your configured cloud storage remotes. It generates various reports to help you understand file distribution, identify duplicates, track usage by extension, and explore your storage hierarchically.
 
-## Overview
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Repository](https://img.shields.io/badge/GitHub-tesserato/CloudMapper-blue?logo=github)](https://github.com/tesserato/CloudMapper)
 
-Managing data across multiple cloud storage providers can be challenging. CloudMapper aims to simplify this by:
+CloudMapper is a command-line utility designed to help you understand and analyze your cloud storage. It uses [rclone](https://rclone.org) to interface with various cloud storage providers, gathers information about your files and their structure, and then generates several insightful reports, including:
 
-1.  Connecting to your existing `rclone` configuration.
-2.  Fetching detailed file listings (`lsjson`) and storage usage (`about`) information, often in parallel for speed.
-3.  Processing this data to build an internal representation of your cloud storage.
-4.  Generating multiple human-readable and machine-parseable reports, including an interactive HTML treemap visualization.
-
-It's designed for users who rely on `rclone` and need a better overview of their storage landscape across different services.
-
-## Features
-
-*   **Rclone Integration:** Works directly with your configured `rclone` remotes.
-*   **Parallel Processing:** Fetches `rclone lsjson` and `rclone about` data in parallel across remotes for faster analysis.
-*   **Multiple Output Modes:**
-    *   `Single`: A single text file showing the combined tree structure of all remotes.
-    *   `Remotes`: One text file per remote, showing its individual tree structure.
-    *   `Folders`: Creates a local directory structure mirroring your remotes, with `files.txt` in each directory listing its contents (Default).
-*   **Comprehensive Reports:**
-    *   **File Tree/Listing (`files.txt` or Folder Structure):** Hierarchical view with icons (📁/📄), calculated sizes (💽), and modification dates (📆).
-    *   **Size Usage (`size_used.txt`):** Summary of total calculated size per remote and the grand total based on file listings.
-    *   **Rclone About Summary (`about.txt`):** Aggregated output from `rclone about --json` for each remote, showing total, used, free, and trashed space reported by the provider.
-    *   **Duplicate File Report (`duplicates.txt`):** Identifies potential duplicate files across all scanned remotes based on available file hashes (MD5, SHA-1, SHA-256, DropboxHash, QuickXorHash), sorted by potential space savings.
-    *   **Extensions Report (`extensions.txt`):** Table summarizing file counts and total size per file extension, sorted by total size.
-    *   **HTML Treemap (`treemap.html`):** Interactive treemap visualization (using ECharts) showing storage usage hierarchically. Allows drilling down into folders, hovering for details, and panning/zooming.
-
-*   **Configuration:** Control behavior via command-line arguments or environment variables.
-*   **Optimized Release Builds:** Configured for performance (`LTO`, `codegen-units=1`, etc.).
+*   A detailed tree view of your files and folders.
+*   A report on duplicate files (based on hashes).
+*   A summary of file extensions and their storage consumption.
+*   A size usage report per remote and overall.
+*   An interactive HTML treemap visualization of your storage.
 
 ## Example Output Snippets
 
-**(Note: Actual appearance may vary based on terminal support for icons/emoji.)**
+**`treemap.html`: (For an similar, interactive example, click [here](https://echarts.apache.org/examples/en/editor.html?c=treemap-disk))**
+
+![Treemap](treemap.png)
+
 
 **`files.txt` (Single/Remotes Mode) or content within Folders Mode:**
 
@@ -89,39 +69,48 @@ Extension       |      Total Size |   File Count |  % Size |  % Count
 ...
 ```
 
-**`treemap.html`:**
-An interactive HTML page showing nested rectangles where the area represents the size. You can click rectangles (folders) to zoom in, hover to see the full path and size, and use a breadcrumb trail to navigate back up. Uses a dark theme by default.
+
+
+## Features
+
+*   **Comprehensive Analysis**: Leverages `rclone lsjson` and `rclone about` for detailed data.
+*   **Multiple Output Modes**:
+    *   `single`: A single text file for all remotes.
+    *   `remotes`: One text file per remote.
+    *   `folders`: A local directory structure mirroring your remotes.
+*   **Insightful Reports**:
+    *   File/Folder tree structure with sizes and modification dates.
+    *   Duplicate file detection across remotes.
+    *   File extension statistics (count, total size, percentages).
+    *   Overall and per-remote size usage.
+    *   `rclone about` summary.
+*   **Interactive Visualization**: Generates an HTML treemap using [ECharts](https://echarts.apache.org/en/index.html) for a visual overview of storage distribution.
+*   **Configurable**: Control which reports are generated, rclone path, config file, and output location.
+*   **Parallel Processing**: Utilizes Rayon for faster processing of multiple remotes.
 
 ## Prerequisites
 
-1.  **Rclone:** CloudMapper *requires* `rclone` to be installed and configured on your system. You need to have your cloud remotes set up using `rclone config` *before* running CloudMapper. Visit the [rclone website](https://rclone.org/) for installation instructions.
-2.  **Rust:** If building from source, you need the Rust toolchain (including `cargo`) installed. Visit [rustup.rs](https://rustup.rs/) to install it.
+*   **Rust**: Ensure you have Rust installed. You can get it from [rustup.rs](https://rustup.rs/).
+*   **rclone**: `rclone` must be installed and configured with the remotes you want to analyze. CloudMapper will attempt to use `rclone` from your system's PATH, or you can specify a path to the executable.
 
 ## Installation
 
-### Option 1: From Crates.io (Recommended - If Published)
-
-```bash
-cargo install cloudmapper
-```
-<!-- TODO: Uncomment and ensure package is published before claiming this -->
-
-### Option 2: From Source
-
-1.  Clone the repository:
+1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/YOUR_USERNAME/cloudmapper.git # TODO: Replace YOUR_USERNAME
-    cd cloudmapper
+    git clone https://github.com/tesserato/CloudMapper.git
+    cd CloudMapper
     ```
-2.  Build the release binary:
+
+2.  **Build the project:**
     ```bash
     cargo build --release
     ```
-3.  The executable will be located at `target/release/cloudmapper`. You can copy this binary to a location in your system's PATH (e.g., `~/.local/bin/` or `/usr/local/bin/`).
+    The executable will be located at `target/release/cloudmapper`.
+
+3.  **(Optional) Add to PATH:**
+    You can copy the executable to a directory in your system's PATH for easier access, e.g., `~/.local/bin/` or `/usr/local/bin/`.
 
 ## Usage
-
-The basic command structure is:
 
 ```bash
 cloudmapper [OPTIONS]
@@ -129,96 +118,65 @@ cloudmapper [OPTIONS]
 
 **Common Options:**
 
-*   `-o, --output-path <PATH>`: **Required (or use `CM_OUTPUT` env var)**. Specifies the directory where reports will be saved (Default: `./cloud`).
-*   `-m, --output-mode <MODE>`: How to structure the file list output (`single`, `remotes`, `folders`). Default: `folders`. (Env: `CM_OUTPUT_MODE`)
-*   `-r, --rclone-path <PATH>`: Path to the `rclone` executable if not in PATH. (Env: `RCLONE_EXECUTABLE`)
-*   `-c, --rclone-config <PATH>`: Path to a specific `rclone.conf` file. (Env: `RCLONE_CONFIG`)
-*   `-k, --clean-output <true|false>`: Clean (remove) the output directory before running. Default: `true`. (Env: `CM_CLEAN_OUTPUT`)
-*   `-d, --duplicates <true|false>`: Enable/disable duplicates report. Default: `true`. (Env: `CM_DUPLICATES`)
-*   `-e, --extensions-report <true|false>`: Enable/disable extensions report. Default: `true`. (Env: `CM_EXTENSIONS`)
-*   `-a, --about-report <true|false>`: Enable/disable `rclone about` summary report. Default: `true`. (Env: `CM_ABOUT`)
-*   `-t, --html-treemap <true|false>`: Enable/disable HTML treemap report. Default: `true`. (Env: `CM_HTML_TREEMAP`)
-*   `--help`: Show all available options and their descriptions.
+*   `-r, --rclone-path <RCLONE_PATH>`: Path to a specific rclone executable.
+*   `-c, --rclone-config <RCLONE_CONFIG>`: Path to a specific rclone configuration file.
+*   `-o, --output-path <OUTPUT_PATH>`: Directory for generated reports (default: `./cloud`).
+*   `-m, --output-mode <OUTPUT_MODE>`: Output structure for the file list report (`single`, `remotes`, `folders`; default: `folders`).
+*   `-d, --duplicates <true|false>`: Enable duplicate file report (default: `true`).
+*   `-e, --extensions-report <true|false>`: Enable file extensions report (default: `true`).
+*   `-a, --about-report <true|false>`: Enable 'rclone about' report (default: `true`).
+*   `-t, --html-treemap <true|false>`: Enable HTML treemap report (default: `true`).
+*   `-k, --clean-output <true|false>`: Clean output directory before generating reports (default: `true`).
+*   `--help`: Show help message.
+*   `--version`: Show version information.
 
 **Example:**
 
 ```bash
-# Run with default settings, outputting to ./my-cloud-reports
-cloudmapper -o ./my-cloud-reports
+# Analyze all configured rclone remotes and save reports to the default './cloud' directory
+./target/release/cloudmapper
 
-# Run using a specific rclone config, disable duplicates, output as single file
-cloudmapper -c ~/.config/rclone/rclone.conf -o ./reports --output-mode single --duplicates false
+# Analyze remotes, save to a custom directory, and only generate the treemap and size reports
+./target/release/cloudmapper -o ./my_cloud_analysis --duplicates false --extensions-report false --about-report false
 
-# Run using environment variables
-export CM_OUTPUT="./reports"
-export CM_OUTPUT_MODE="remotes"
-export CM_DUPLICATES="false"
-cloudmapper
+# Use a specific rclone binary and config, output in single file mode
+./target/release/cloudmapper --rclone-path /opt/rclone/rclone --rclone-config ~/.config/rclone/rclone.conf -m single
 ```
 
-## Configuration via Environment Variables
+For detailed options, run `cloudmapper --help`.
 
-All command-line options can alternatively be set using environment variables:
+## Reports Generated
 
-| Environment Variable  | Corresponding Flag     | Description                                       |
-| :-------------------- | :--------------------- | :------------------------------------------------ |
-| `RCLONE_EXECUTABLE`   | `-r`, `--rclone-path`  | Path to `rclone` executable                       |
-| `RCLONE_CONFIG`       | `-c`, `--rclone-config` | Path to `rclone.conf` file                        |
-| `CM_OUTPUT`           | `-o`, `--output-path`  | Output directory path                             |
-| `CM_OUTPUT_MODE`      | `-m`, `--output-mode`  | Output mode (`single`, `remotes`, `folders`)      |
-| `CM_DUPLICATES`       | `-d`, `--duplicates`   | Enable duplicates report (`true` or `false`)      |
-| `CM_EXTENSIONS`       | `-e`, `--extensions-report` | Enable extensions report (`true` or `false`) |
-| `CM_ABOUT`            | `-a`, `--about-report` | Enable `about` report (`true` or `false`)         |
-| `CM_HTML_TREEMAP`     | `-t`, `--html-treemap` | Enable HTML treemap report (`true` or `false`)    |
-| `CM_CLEAN_OUTPUT`     | `-k`, `--clean-output` | Clean output directory (`true` or `false`)        |
+By default, CloudMapper generates the following files in the specified output directory (e.g., `./cloud/`):
 
-*Note: Command-line arguments take precedence over environment variables.*
-
-## Output Files Description
-
-CloudMapper generates the following files in the specified output directory (by default):
-
-*   **`files.txt`** (In `Single` or `Remotes` mode) OR **Directory Structure** (In `Folders` mode):
-    *   **Single/Remotes:** A text file containing the hierarchical file listing.
-    *   **Folders:** A directory structure matching your remotes. Inside each created directory, a `files.txt` lists the contents (files and subdirectories) of that specific remote directory.
-*   **`size_used.txt`**: Text file summarizing the total calculated size (from `lsjson`) for each remote and the overall total.
-*   **`about.txt`**: Text file summarizing the output of `rclone about --json` for each remote, showing provider-reported usage stats (Total, Used, Free, Trashed).
-*   **`duplicates.txt`** (If enabled): Text file listing sets of files identified as duplicates based on matching hashes, ordered by potential space saving. Includes file paths and the matching hash values.
-*   **`extensions.txt`** (If enabled): Text file table showing file counts, total size, and percentage breakdown per file extension, sorted by total size descending.
-*   **`treemap.html`** (If enabled): An interactive HTML file visualizing storage usage as a treemap. Open this file in your web browser.
-
-## Development & Contributing
-
-Contributions are welcome!
-
-1.  **Fork** the repository on GitHub.
-2.  Create a new **branch** for your feature or bugfix.
-3.  Make your changes. Ensure code is formatted with `cargo fmt`.
-4.  Run `cargo clippy` and address any warnings.
-5.  Consider adding tests for your changes. Run tests with `cargo test`.
-6.  **Commit** your changes with clear messages.
-7.  Push your branch to your fork.
-8.  Create a **Pull Request** against the main repository's `main` branch.
-
-Please open an issue first to discuss significant changes.
+*   **File Structure Report(s):**
+    *   `files.txt` (in `Single` and `Folders` mode; for `Folders` mode, this file is created within each directory)
+    *   `_<RemoteName> files.txt` (in `Remotes` mode, one per remote)
+*   **`duplicates.txt`**: Lists files with identical hashes.
+*   **`extensions.txt`**: Summarizes file counts and total sizes per extension.
+*   **`size_used.txt`**: Reports calculated total size per remote and grand total.
+*   **`about.txt`**: Summarizes storage usage from `rclone about`.
+*   **`treemap.html`**: An interactive HTML treemap visualization.
 
 ## License
 
-This project is licensed under either of
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
-*   Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-*   MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+## Keywords
 
-at your option.
+`cloud`, `treemap`, `visualization`, `rclone`, `storage`, `echarts`
 
-<!-- TODO: Ensure LICENSE-APACHE and LICENSE-MIT files exist in the repo -->
+## Categories
 
-## Acknowledgements
+*   `command-line-utilities`
+*   `visualization`
+*   `filesystem`
+*   *(TODO: Add two other categories)*
 
-*   **Rclone:** The core dependency for cloud interaction. ([rclone.org](https://rclone.org/))
-*   **Clap:** For command-line argument parsing. ([crates.io/crates/clap](https://crates.io/crates/clap))
-*   **Serde:** For JSON serialization/deserialization. ([crates.io/crates/serde](https://crates.io/crates/serde))
-*   **Rayon:** For parallel processing. ([crates.io/crates/rayon](https://crates.io/crates/rayon))
-*   **human_bytes:** For formatting sizes into human-readable units. ([crates.io/crates/human_bytes](https://crates.io/crates/human_bytes))
-*   **ECharts:** For the interactive HTML treemap visualization. ([echarts.apache.org](https://echarts.apache.org/))
-```
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues, fork the repository and send pull requests.
+
+## Repository
+
+[https://github.com/tesserato/CloudMapper](https://github.com/tesserato/CloudMapper)
