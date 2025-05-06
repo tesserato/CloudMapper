@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/cloudmapper.svg)](https://crates.io/crates/cloudmapper) <!-- TODO: Update if published -->
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://opensource.org/licenses/MIT)
 
-CloudMapper is a command-line tool that leverages `rclone` to analyze and visualize the contents and usage of your configured cloud storage remotes. It generates various reports to help you understand file distribution, identify duplicates, track usage by extension, and explore your storage hierarchically.
+CloudMapper is a command-line tool that leverages `rclone` to analyse and visualize the contents and usage of your configured cloud storage remotes. It generates various reports to help you understand file distribution, identify duplicates, track usage by extension, and explore your storage hierarchically.
 
 ## Overview
 
