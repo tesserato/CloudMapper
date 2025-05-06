@@ -7,8 +7,8 @@ repository = "https://github.com/tesserato/CloudMapper"
 readme = "README.md"
 edition = "2021"
 license = "MIT"
-keywords = ["cloud", "treemap", "visualization", "rclone", "storage", "echarts"]
-categories = ["command-line-utilities", "visualization", "filesystem", "TODO: Add two other categories"]
+keywords = ["cloud", "treemap", "visualization", "rclone", "echarts"]
+categories = ["command-line-utilities", "visualization", "filesystem", "parsing", "text-processing"]
 
 [dependencies]
 serde = { version = "1.0", features = [
