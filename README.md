@@ -1,4 +1,3 @@
-
 # CloudMapper: Open-source tool to map and visualize your cloud storage landscape.
 
 
@@ -11,6 +10,7 @@ CloudMapper is a command-line utility designed to help you understand and analyz
 *   A report on duplicate files (based on hashes).
 *   A summary of file extensions and their storage consumption.
 *   A size usage report per remote and overall.
+*   A report listing the N largest files found across all remotes.
 *   An interactive HTML treemap visualization of your storage.
 
 ## Example Output Snippets
@@ -71,6 +71,19 @@ Extension       |      Total Size |   File Count |  % Size |  % Count
 ...
 ```
 
+**`largest_files.txt`:**
+
+```text
+Top 100 Largest Files (across all remotes):
+----------------------------------------------------------------------
+Rank  |            Size | Path (Service:File)
+----------------------------------------------------------------------
+1     |       12.5 GiB | my-gdrive:videos/archive/holiday_movie_compilation.mkv
+2     |        8.2 GiB | my-s3:backups-large/vm_image_backup.vmdk
+3     |        5.0 GiB | my-onedrive:iso_files/linux_distro_latest.iso
+...
+```
+
 
 
 ## Features
@@ -84,6 +97,7 @@ Extension       |      Total Size |   File Count |  % Size |  % Count
     *   File/Folder tree structure with sizes and modification dates.
     *   Duplicate file detection across remotes.
     *   File extension statistics (count, total size, percentages).
+    *   List of N largest files across all remotes.
     *   Overall and per-remote size usage.
     *   `rclone about` summary.
 *   **Interactive Visualization**: Generates an HTML treemap using [ECharts](https://echarts.apache.org/en/index.html) for a visual overview of storage distribution.
@@ -127,6 +141,7 @@ cloudmapper [OPTIONS]
 *   `-d, --duplicates <true|false>`: Enable duplicate file report (default: `true`).
 *   `-e, --extensions-report <true|false>`: Enable file extensions report (default: `true`).
 *   `-a, --about-report <true|false>`: Enable 'rclone about' report (default: `true`).
+*   `-l, --largest-files <COUNT>`: Number of largest files to report (default: 100, 0 to disable).
 *   `-t, --html-treemap <true|false>`: Enable HTML treemap report (default: `true`).
 *   `-k, --clean-output <true|false>`: Clean output directory before generating reports (default: `true`).
 *   `--help`: Show help message.
@@ -156,6 +171,7 @@ By default, CloudMapper generates the following files in the specified output di
     *   `_<RemoteName> files.txt` (in `Remotes` mode, one per remote)
 *   **`duplicates.txt`**: Lists files with identical hashes.
 *   **`extensions.txt`**: Summarizes file counts and total sizes per extension.
+*   **`largest_files.txt`**: Lists the N largest files found, with their sizes and paths.
 *   **`size_used.txt`**: Reports calculated total size per remote and grand total.
 *   **`about.txt`**: Summarizes storage usage from `rclone about`.
 *   **`treemap.html`**: An interactive HTML treemap visualization.
@@ -163,17 +179,6 @@ By default, CloudMapper generates the following files in the specified output di
 ## License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
-
-## Keywords
-
-`cloud`, `treemap`, `visualization`, `rclone`, `storage`, `echarts`
-
-## Categories
-
-*   `command-line-utilities`
-*   `visualization`
-*   `filesystem`
-*   *(TODO: Add two other categories)*
 
 ## Contributing
 
