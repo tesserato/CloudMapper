@@ -1325,6 +1325,83 @@ impl Files {
         lines.join("\n")
     }
 
+    /// Generates the formatted text report for the N largest files.
+    /// Uses parallel sorting (`rayon`) to order files by size (descending).
+    ///
+    /// # Arguments
+    /// * `num_largest_files` - The number of largest files to include in the report.
+    ///
+    /// # Returns
+    /// A string containing the formatted largest files report.
+    pub fn generate_largest_files_report(&self, num_largest_files: usize) -> String {
+        if num_largest_files == 0 {
+            // This case should be handled by the caller, but defensive.
+            return "Largest files report disabled (count is 0).".to_string();
+        }
+
+        println!("Identifying top {} largest files...", num_largest_files);
+
+        let mut all_actual_files: Vec<&File> = self
+            .files
+            .values()
+            .filter(|f| !f.is_dir && f.size >= 0) // Only actual files with valid non-negative size
+            .collect();
+
+        if all_actual_files.is_empty() {
+            return "No files found to generate largest files report.".to_string();
+        }
+
+        // Sort files by size in descending order.
+        // Using parallel sort for potentially very large number of total files.
+        all_actual_files.par_sort_unstable_by(|a, b| b.size.cmp(&a.size));
+
+        let mut lines: Vec<String> = Vec::new();
+        let actual_num_to_show = num_largest_files.min(all_actual_files.len());
+
+        lines.push(format!(
+            "Top {} Largest Files (across all remotes):",
+            actual_num_to_show
+        ));
+        lines.push(
+            "----------------------------------------------------------------------".to_string(),
+        ); // Adjusted separator
+        lines.push(format!(
+            "{:<5} | {:>15} | {}", // Adjusted formatting for Rank, Size, Path
+            "Rank", "Size", "Path (Service:File)"
+        ));
+        lines.push(
+            "----------------------------------------------------------------------".to_string(),
+        ); // Adjusted separator
+
+        for (i, file) in all_actual_files.iter().take(actual_num_to_show).enumerate() {
+            let rank = i + 1;
+            let size_str = human_bytes(file.size as f64);
+            // Construct full path: service:path/components...
+            // file.path contains components like ["dir", "file_stem_if_ext_present_else_name"]
+            // file.name (from RawFile.Name) is the base name.
+            // file.ext is the extension.
+            // The path stored in `file.path` should represent the full path relative to the service root,
+            // with the last component being the filename (possibly without extension depending on from_raw).
+            // Let's assume file.path.join("/") correctly reconstructs the full relative path.
+            let full_path = format!("{}:{}", file.service, file.path.join("/"));
+
+            lines.push(format!(
+                "{:<5} | {:>15} | {}", // Consistent with header
+                rank, size_str, full_path
+            ));
+        }
+
+        if all_actual_files.len() > actual_num_to_show {
+            lines.push("".to_string());
+            lines.push(format!(
+                "... and {} more files not listed.",
+                all_actual_files.len() - actual_num_to_show
+            ));
+        }
+
+        lines.join("\n")
+    }
+
     /// Gets a sorted list of unique service names present in the collection.
     ///
     /// # Returns
@@ -1759,6 +1836,7 @@ pub fn parse_rclone_lsjson(json_data: &str) -> Result<Vec<RawFile>, serde_json::
 /// * `output_division_mode` - The selected `OutputMode` (Single, Remotes, Folders).
 /// * `enable_duplicates_report` - Flag to enable/disable duplicates report generation.
 /// * `enable_extensions_report` - Flag to enable/disable extensions report generation.
+/// * `num_largest_files` - Number of largest files to report (0 to disable).
 /// * `enable_html_treemap` - Flag to enable/disable HTML treemap generation.
 /// * `output_dir` - Path to the directory where reports will be saved.
 /// * `tree_base_filename` - Base filename for tree/content files (e.g., "files.txt").
@@ -1766,6 +1844,7 @@ pub fn parse_rclone_lsjson(json_data: &str) -> Result<Vec<RawFile>, serde_json::
 /// * `duplicates_output_filename` - Filename for the duplicates report.
 /// * `size_output_filename` - Filename for the size summary report.
 /// * `extensions_output_filename` - Filename for the extensions report.
+/// * `largest_files_output_filename` - Filename for the largest files report.
 /// * `treemap_output_filename` - Filename for the HTML treemap report.
 /// * `folder_icon`, `file_icon`, `size_icon`, `date_icon`, `remote_icon` - Icons for formatting text reports.
 ///
@@ -1778,14 +1857,16 @@ pub fn generate_reports(
     output_division_mode: OutputMode,
     enable_duplicates_report: bool,
     enable_extensions_report: bool,
-    enable_html_treemap: bool, // New flag
+    num_largest_files: usize, 
+    enable_html_treemap: bool,
     output_dir: &Path,
-    tree_base_filename: &str,      // Base name for tree/content files
-    folder_content_filename: &str, // Specific name for content file in Folders mode
+    tree_base_filename: &str,
+    folder_content_filename: &str,
     duplicates_output_filename: &str,
     size_output_filename: &str,
     extensions_output_filename: &str,
-    treemap_output_filename: &str, // New filename for HTML treemap
+    largest_files_output_filename: &str, 
+    treemap_output_filename: &str,
     folder_icon: &str,
     file_icon: &str,
     size_icon: &str,
@@ -1837,6 +1918,27 @@ pub fn generate_reports(
         // If disabled, remove any pre-existing extensions report file.
         if extensions_output_path.exists() {
             let _ = fs::remove_file(&extensions_output_path);
+        }
+    }
+
+    // --- 2c. Generate Largest Files Report (if enabled) ---
+    let largest_files_output_path = output_dir.join(largest_files_output_filename);
+    if num_largest_files > 0 {
+        println!(
+            "Generating largest files report (top {})...",
+            num_largest_files
+        );
+        let largest_files_report_string =
+            files_data.generate_largest_files_report(num_largest_files);
+        fs::write(&largest_files_output_path, largest_files_report_string)?;
+        println!(
+            "Largest files report written to '{}'",
+            largest_files_output_path.display()
+        );
+    } else {
+        println!("Largest files report skipped (count is 0).");
+        if largest_files_output_path.exists() {
+            let _ = fs::remove_file(&largest_files_output_path);
         }
     }
 

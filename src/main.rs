@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 // Import types and functions from the library crate
-use cloudmapper::{AboutResult, Files, OutputMode, RcloneAboutInfo, RawFile};
+use cloudmapper::{AboutResult, Files, OutputMode, RawFile, RcloneAboutInfo};
 
 // --- Configuration Constants (Base Filenames) ---
 /// Base filename for the main file list/tree output.
@@ -33,6 +33,8 @@ const ABOUT_OUTPUT_FILE_NAME: &str = "about.txt";
 const EXTENSIONS_OUTPUT_FILE_NAME: &str = "extensions.txt";
 /// Filename for the HTML treemap visualization report.
 const TREEMAP_OUTPUT_FILE_NAME: &str = "treemap.html";
+/// Filename for the largest files report.
+const LARGEST_FILES_OUTPUT_FILE_NAME: &str = "largest_files.txt";
 
 // --- Icons Used in Text Reports ---
 /// Icon representing a cloud remote.
@@ -99,6 +101,12 @@ struct Args {
     #[arg(long, short = 'e', default_value_t = true, env = "CM_EXTENSIONS")]
     extensions_report: bool,
 
+    /// Number of largest files to list in the 'largest_files.txt' report.
+    /// Set to 0 to disable this report. Defaults to 100.
+    /// Can also be set via the `CM_LARGEST_FILES` environment variable.
+    #[arg(long, short = 'l', default_value_t = 100, env = "CM_LARGEST_FILES")]
+    largest_files: usize,
+
     /// Enable the 'rclone about' report (`about.txt`) for remote storage usage summary.
     /// Defaults to true. Set to `false` to disable.
     /// Can also be set via the `CM_ABOUT` environment variable.
@@ -153,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Clean Output Dir: {}", args.clean_output);
     println!("  Duplicates Report: {}", args.duplicates);
     println!("  Extensions Report: {}", args.extensions_report);
+    println!("  Largest Files Report (Top N): {}", args.largest_files);
     println!("  About Report: {}", args.about_report);
     println!("  HTML Treemap Report: {}", args.html_treemap);
     println!("{SECTION_SEPARATOR}");
@@ -219,7 +228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect() // Collect into a Vec<String>
             }
             Err(e) => {
-                 // Handle errors during command execution (e.g., rclone not found).
+                // Handle errors during command execution (e.g., rclone not found).
                 eprintln!(
                     "Fatal Error: Failed to execute '{} listremotes': {}",
                     rclone_executable, e
@@ -339,12 +348,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for result in lsjson_results {
         match result {
             Ok((remote_name, raw_files)) => {
-                 // Add the successfully parsed files to the main collection.
+                // Add the successfully parsed files to the main collection.
                 files_collection.add_remote_files(&remote_name, raw_files);
                 remotes_processed_successfully += 1;
             }
             Err(_) => {
-                 // An error occurred for this remote (already logged). Increment error count.
+                // An error occurred for this remote (already logged). Increment error count.
                 lsjson_process_errors += 1;
             }
         }
@@ -355,7 +364,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{SECTION_SEPARATOR}");
 
-
     // --- 4. Generate Standard Reports (if data exists) ---
     let mut report_generation_error = false; // Flag to track errors during report generation.
 
@@ -364,24 +372,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Handle cases where no files were found or processed successfully.
         if lsjson_process_errors > 0 {
             println!(
-                "Warning: No file data collected, likely due to {} lsjson error(s). Skipping standard report generation (Tree, Size, Duplicates, Extensions, Treemap).",
+                "Warning: No file data collected, likely due to {} lsjson error(s). Skipping standard report generation (Tree, Size, Duplicates, Extensions, Largest Files, Treemap).",
                 lsjson_process_errors
             );
         } else if remotes_processed_successfully == 0 && !remote_names.is_empty() {
             // This case means lsjson ran for remotes but returned empty lists or only errors.
-             println!("Warning: No data successfully processed from any remote via lsjson. Skipping standard report generation.");
+            println!("Warning: No data successfully processed from any remote via lsjson. Skipping standard report generation.");
         } else {
-             // This case means lsjson succeeded for >= 1 remote but found 0 files.
+            // This case means lsjson succeeded for >= 1 remote but found 0 files.
             println!("No files found across successfully processed remotes. Skipping standard report generation.");
         }
 
         // Even if standard reports are skipped, the 'about' report might still be desired.
         if !args.about_report || remote_names.is_empty() {
-             // If 'about' is also disabled or no remotes exist, we are truly done.
+            // If 'about' is also disabled or no remotes exist, we are truly done.
             println!("No reports to generate based on configuration and available data. Exiting.");
             return Ok(());
         } else {
-             // If 'about' is enabled, proceed to that section only.
+            // If 'about' is enabled, proceed to that section only.
             println!("Proceeding with 'about' report generation only.");
         }
     } else {
@@ -395,14 +403,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.output_mode,
             args.duplicates,
             args.extensions_report,
-            args.html_treemap, // Pass the treemap flag
+            args.largest_files, // Pass the new largest_files count
+            args.html_treemap,
             &output_dir,
-            TREE_OUTPUT_FILE_NAME, // Base name for tree/content file
-            TREE_OUTPUT_FILE_NAME, // Use same base name for folder content filename for simplicity
+            TREE_OUTPUT_FILE_NAME,
+            TREE_OUTPUT_FILE_NAME,
             DUPLICATES_OUTPUT_FILE_NAME,
             SIZE_OUTPUT_FILE_NAME,
             EXTENSIONS_OUTPUT_FILE_NAME,
-            TREEMAP_OUTPUT_FILE_NAME, // Pass the specific treemap filename
+            LARGEST_FILES_OUTPUT_FILE_NAME, // Pass the new filename
+            TREEMAP_OUTPUT_FILE_NAME,
             FOLDER_ICON,
             FILE_ICON,
             SIZE_ICON,
@@ -443,7 +453,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         output_dir.join(EXTENSIONS_OUTPUT_FILE_NAME).display()
                     );
                 }
-                if args.html_treemap { // Print path for treemap if it was generated
+                if args.largest_files > 0 {
+                    println!(
+                        "  Largest Files report: {}",
+                        output_dir.join(LARGEST_FILES_OUTPUT_FILE_NAME).display()
+                    );
+                }
+                if args.html_treemap {
                     println!(
                         "  HTML Treemap report: {}",
                         output_dir.join(TREEMAP_OUTPUT_FILE_NAME).display()
@@ -467,8 +483,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
 
         // Determine which services to query for 'about' info.
-         // Prefer the list derived from successfully processed lsjson data,
-         // fallback to the initial list from `listremotes` if lsjson failed entirely.
+        // Prefer the list derived from successfully processed lsjson data,
+        // fallback to the initial list from `listremotes` if lsjson failed entirely.
         let services_to_query = if !files_collection.roots_by_service.is_empty() {
             files_collection.get_service_names() // Get names from successfully processed remotes
         } else {
@@ -579,14 +595,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total_duration = overall_start_time.elapsed();
     println!("{SECTION_SEPARATOR}");
     println!("Processing Summary:");
-    println!("  Total execution time: {:.2}s", total_duration.as_secs_f32());
+    println!(
+        "  Total execution time: {:.2}s",
+        total_duration.as_secs_f32()
+    );
     println!("  Remotes found via 'listremotes': {}", remote_names.len());
     println!(
         "  Remotes successfully processed via 'lsjson': {}",
         remotes_processed_successfully
     );
-     // Calculate total errors encountered across different phases.
-     // Note: process_about_results currently logs errors but doesn't contribute to this count directly.
+    // Calculate total errors encountered across different phases.
+    // Note: process_about_results currently logs errors but doesn't contribute to this count directly.
     let total_errors = lsjson_process_errors // Errors during lsjson fetching/parsing
         + if report_generation_error { 1 } else { 0 } // Error during standard report writing
         + if about_report_error { 1 } else { 0 }; // Error during about report writing/processing
@@ -598,7 +617,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- 7. Final Result ---
     if total_errors > 0 || report_generation_error || about_report_error {
-         // If any significant errors occurred, report completion with errors.
+        // If any significant errors occurred, report completion with errors.
         eprintln!("CloudMapper completed with errors. Please check logs above.");
         // Return a generic error to indicate non-successful completion.
         Err(Box::new(io::Error::new(
@@ -606,7 +625,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Processing completed with one or more errors.",
         )))
     } else {
-         // All steps completed without critical errors.
+        // All steps completed without critical errors.
         println!("CloudMapper processing completed successfully.");
         Ok(())
     }
