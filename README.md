@@ -1,10 +1,17 @@
 # CloudMapper: Open-source tool to map and visualize your cloud storage landscape.
 
-
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/cloudmapper.svg)](https://crates.io/crates/cloudmapper)
 [![Repository](https://img.shields.io/badge/GitHub-tesserato/CloudMapper-blue?logo=github)](https://github.com/tesserato/CloudMapper)
+[![Downloads](https://img.shields.io/github/downloads/tesserato/CloudMapper/total.svg)](https://github.com/tesserato/CloudMapper/releases)
 
-CloudMapper is a command-line utility designed to help you understand and analyze your cloud storage. It uses [rclone](https://rclone.org) to interface with various cloud storage providers, gathers information about your files and their structure, and then generates several insightful reports, including:
+##  WinDirStat for the cloud - Understand your scattered cloud storage at a glance
+
+> [!IMPORTANT] 
+> CloudMapper operates in a **read-only** manner regarding your cloud storage. It **does not have direct access** to your cloud storage providers. All interactions with your cloud services are performed by invoking the `rclone` command-line tool. CloudMapper **cannot write to, delete from, or modify your cloud storage in any way**. Its operations are limited to listing files/folders and querying storage usage information via `rclone`. Any report suggesting potential savings (e.g., from duplicates) is for informational purposes only; actions to modify cloud data must be taken by you, typically using `rclone` or your cloud provider's interface directly.
+
+
+CloudMapper is a command-line utility designed to help you understand and Analyse your cloud storage. It uses [rclone](https://rclone.org) to interface with various cloud storage providers, gathers information about your files and their structure, and then generates several insightful reports, including:
 
 *   A detailed text tree view of your files and folders (for `Single`/`Remotes` modes) or a mirrored local directory structure with placeholders for the actual files (for `Folders` mode).
 *   A report on duplicate files (based on hashes).
@@ -12,14 +19,13 @@ CloudMapper is a command-line utility designed to help you understand and analyz
 *   A size usage report per remote and overall.
 *   A report listing the N largest files found across all remotes.
 *   An interactive HTML treemap visualization of your storage.
+*   Simple installation (`cargo install cloudmapper`) or see [Installation](#installation) for more options.
 
-## Example Output Snippets
+## Example Output
 
 **`treemap.html`: (For an similar, interactive example, click [here](https://echarts.apache.org/examples/en/editor.html?c=treemap-disk))**
 
 ![Treemap](https://raw.githubusercontent.com/tesserato/CloudMapper/refs/heads/main/treemap.jpeg)
-
-
 
 
 **`files.txt` (In `Single` mode, or the content file like `_MyRemote files.txt` in `Remotes` mode, or the content file within each directory in `Folders` mode):**
@@ -104,12 +110,36 @@ Rank  |            Size | Path (Service:File)
 *   **Configurable**: Control which reports are generated, rclone path, config file, and output location.
 *   **Parallel Processing**: Utilizes Rayon for faster processing of multiple remotes.
 
+
 ## Prerequisites
 
-*   **Rust**: Ensure you have Rust installed. You can get it from [rustup.rs](https://rustup.rs/).
-*   **rclone**: `rclone` must be installed and configured with the remotes you want to analyze. CloudMapper will attempt to use `rclone` from your system's PATH, or you can specify a path to the executable.
+*   **rclone**: `rclone` must be installed and configured with the remotes you want to Analyse. CloudMapper will attempt to use `rclone` from your system's PATH, or you can specify a path to the executable.
+*   **Rust (for building from source or installing via Cargo):** Ensure you have Rust installed. You can get it from [rustup.rs](https://rustup.rs/).
 
 ## Installation
+
+There are several ways to install CloudMapper:
+
+### 1. Using Cargo (Recommended for Rust users)
+
+If you have Rust and Cargo installed, you can install CloudMapper directly from [crates.io](https://crates.io/crates/cloudmapper):
+
+```bash
+cargo install cloudmapper
+```
+This will download the source, compile it, and install the `cloudmapper` binary in your Cargo binary directory (e.g., `~/.cargo/bin/`). Ensure this directory is in your system's PATH.
+
+### 2. From GitHub Releases (Pre-compiled binaries)
+
+Pre-compiled binaries for common platforms (Linux, macOS, Windows) are available on the [GitHub Releases page](https://github.com/tesserato/CloudMapper/releases).
+
+1.  Go to the [Releases page](https://github.com/tesserato/CloudMapper/releases).
+2.  Download the appropriate release for your operating system and architecture 
+3.  (Optional but recommended) Move the executable to a directory in your system's PATH for easier access (e.g., `~/.local/bin/` on Linux/macOS, or a custom directory on Windows that you've added to PATH).
+
+### 3. Building from Source
+
+If you prefer to build from the latest source code or make modifications:
 
 1.  **Clone the repository:**
     ```bash
@@ -121,13 +151,14 @@ Rank  |            Size | Path (Service:File)
     ```bash
     cargo build --release
     ```
-    The executable will be located at `target/release/cloudmapper`.
+    The executable will be located at `target/release/cloudmapper` (or `target\release\cloudmapper.exe` on Windows).
 
 3.  **(Optional) Add to PATH:**
-    You can copy the executable to a directory in your system's PATH for easier access, e.g., `~/.local/bin/` or `/usr/local/bin/`.
+    You can copy the built executable to a directory in your system's PATH.
 
 ## Usage
 
+Once installed, you can run CloudMapper from your terminal:
 ```bash
 cloudmapper [OPTIONS]
 ```
@@ -150,14 +181,14 @@ cloudmapper [OPTIONS]
 **Example:**
 
 ```bash
-# Analyze all configured rclone remotes and save reports to the default './cloud' directory
-./target/release/cloudmapper
+# Analyse all configured rclone remotes and save reports to the default './cloud' directory
+cloudmapper
 
-# Analyze remotes, save to a custom directory, and only generate the treemap and size reports
-./target/release/cloudmapper -o ./my_cloud_analysis --duplicates false --extensions-report false --about-report false
+# Analyse remotes, save to a custom directory, and only generate the treemap and size reports
+cloudmapper -o ./my_cloud_analysis --duplicates false --extensions-report false --about-report false
 
 # Use a specific rclone binary and config, output in single file mode
-./target/release/cloudmapper --rclone-path /opt/rclone/rclone --rclone-config ~/.config/rclone/rclone.conf -m single
+cloudmapper --rclone-path /opt/rclone/rclone --rclone-config ~/.config/rclone/rclone.conf -m single
 ```
 
 For detailed options, run `cloudmapper --help`.
