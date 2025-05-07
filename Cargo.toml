@@ -1,6 +1,6 @@
 [package]
 name = "cloudmapper"
-version = "0.0.0"
+version = "0.0.1"
 description = "Open-source tool to map and visualize your cloud storage landscape."
 # homepage = "TODO: Add homepage"
 repository = "https://github.com/tesserato/CloudMapper"

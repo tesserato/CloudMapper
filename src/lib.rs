@@ -173,6 +173,51 @@ pub struct File {
     hashes: Option<Hashes>,
 }
 
+/// Sanitizes a string to be safe for use as a filename or directory name on common filesystems,
+/// particularly Windows. Replaces problematic characters with underscores.
+/// Handles reserved characters, control characters, names ending with space/period,
+/// and basic reserved OS names.
+fn sanitize_for_filesystem(name: &str) -> String {
+    // Replace characters that are invalid in Windows filenames/directory names.
+    // Also replace control characters.
+    let mut sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_', // Reserved characters
+            '\x00'..='\x1F' => '_',                                      // ASCII Control characters
+            _ => c,
+        })
+        .collect();
+
+    // Windows filenames/directory names cannot end with a space or a period.
+    // Replace the trailing character if it's a space or period.
+    if let Some(last_char) = sanitized.chars().last() {
+        if last_char == '.' || last_char == ' ' {
+            sanitized.pop(); // Remove the problematic character
+            sanitized.push('_'); // Append an underscore instead
+        }
+    }
+
+    // If the name becomes empty after sanitization (e.g., was "???"), provide a placeholder.
+    if sanitized.is_empty() {
+        return "_empty_name_".to_string();
+    }
+
+    // Check against a list of reserved names on Windows (case-insensitive).
+    // Prepend an underscore if it matches a reserved name.
+    let lower_sanitized = sanitized.to_lowercase();
+    let reserved_names = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+
+    if reserved_names.contains(&lower_sanitized.as_str()) {
+        format!("_{}", sanitized)
+    } else {
+        sanitized
+    }
+}
+
 impl File {
     /// Creates a `File` instance from a `RawFile` and the service name.
     /// Parses the path and extracts the extension.
@@ -441,10 +486,22 @@ impl File {
             return Ok(());
         }
 
-        // Construct the path for the current directory on the filesystem
-        let current_fs_path = parent_fs_path.join(self.get_display_name());
-        fs::create_dir_all(&current_fs_path)?; // Ensure this directory exists
+        // Sanitize the display name for use as a filesystem path component.
+        let display_name = self.get_display_name();
+        let sanitized_display_name = sanitize_for_filesystem(&display_name);
 
+        // Construct the path for the current directory on the filesystem
+        let current_fs_path = parent_fs_path.join(&sanitized_display_name);
+        // Ensure this directory exists. Log specific path on error.
+        if let Err(e) = fs::create_dir_all(&current_fs_path) {
+            eprintln!(
+                "Error: Failed to create directory '{}' (original name: '{}'). OS error: {}",
+                current_fs_path.display(),
+                display_name, // Log original name for context
+                e
+            );
+            return Err(e); // Propagate the error
+        }
         // Generate the content list string using the helper function and cache
         let contents_string = self.format_direct_children_list(
             all_files,
@@ -456,11 +513,28 @@ impl File {
         );
 
         // Write the content list to the specified file within the current directory
+        // folder_content_filename is assumed to be safe (e.g., "files.txt")
         let contents_file_path = current_fs_path.join(folder_content_filename);
-        fs::write(&contents_file_path, contents_string)?;
+        if let Err(e) = fs::write(&contents_file_path, contents_string) {
+            eprintln!(
+                "Error: Failed to write contents to '{}'. OS error: {}",
+                contents_file_path.display(),
+                e
+            );
+            return Err(e); // Propagate the error
+        }
+
+        // Sort children for deterministic processing order
+        let mut sorted_children_keys: Vec<&String> = self.children_keys.iter().collect();
+        sorted_children_keys.sort_by_cached_key(|key| {
+            all_files.get(*key).map_or_else(
+                || String::new(), // Should not happen if data is consistent
+                |f| f.get_display_name(),
+            )
+        });
 
         // Recursively call this function for child DIRECTORIES only
-        for child_key in &self.children_keys {
+        for child_key in sorted_children_keys {
             if let Some(child_file) = all_files.get(child_key) {
                 if child_file.is_dir {
                     // Recurse into subdirectory
