@@ -7,3 +7,4 @@ excluded_paths.txt
 dist/
 .intentionally-empty-file.o
 target/
+DRAFT.MD

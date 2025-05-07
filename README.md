@@ -6,7 +6,7 @@
 
 CloudMapper is a command-line utility designed to help you understand and analyze your cloud storage. It uses [rclone](https://rclone.org) to interface with various cloud storage providers, gathers information about your files and their structure, and then generates several insightful reports, including:
 
-*   A detailed tree view of your files and folders.
+*   A detailed text tree view of your files and folders (for `Single`/`Remotes` modes) or a mirrored local directory structure with placeholders for the actual files (for `Folders` mode).
 *   A report on duplicate files (based on hashes).
 *   A summary of file extensions and their storage consumption.
 *   A size usage report per remote and overall.
@@ -22,7 +22,7 @@ CloudMapper is a command-line utility designed to help you understand and analyz
 
 
 
-**`files.txt` (Single/Remotes Mode) or content within Folders Mode:**
+**`files.txt` (In `Single` mode, or the content file like `_MyRemote files.txt` in `Remotes` mode, or the content file within each directory in `Folders` mode):**
 
 ```text
 ☁️ my-gdrive: 15.21 GiB
@@ -92,7 +92,7 @@ Rank  |            Size | Path (Service:File)
 *   **Multiple Output Modes**:
     *   `single`: A single text file for all remotes.
     *   `remotes`: One text file per remote.
-    *   `folders`: A local directory structure mirroring your remotes.
+    *   `folders`: A local directory structure mirroring your remotes, with placeholders for the actual files.
 *   **Insightful Reports**:
     *   File/Folder tree structure with sizes and modification dates.
     *   Duplicate file detection across remotes.
@@ -167,7 +167,7 @@ For detailed options, run `cloudmapper --help`.
 By default, CloudMapper generates the following files in the specified output directory (e.g., `./cloud/`):
 
 *   **File Structure Report(s):**
-    *   `files.txt` (in `Single` and `Folders` mode; for `Folders` mode, this file is created within each directory)
+    *   `files.txt` (in `Single` mode, and as the content summary file within each directory in `Folders` mode. For `Folders` mode, if a service has root-level files, they will be listed in a `files.txt` within the `output_dir/<service_name>/` directory.)
     *   `_<RemoteName> files.txt` (in `Remotes` mode, one per remote)
 *   **`duplicates.txt`**: Lists files with identical hashes.
 *   **`extensions.txt`**: Summarizes file counts and total sizes per extension.

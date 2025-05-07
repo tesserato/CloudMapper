@@ -2,7 +2,7 @@
 name = "cloudmapper"
 version = "0.0.2"
 description = "Open-source tool to map and visualize your cloud storage landscape."
-# homepage = "TODO: Add homepage"
+homepage = "https://github.com/tesserato/CloudMapper"
 repository = "https://github.com/tesserato/CloudMapper"
 readme = "README.md"
 edition = "2021"
