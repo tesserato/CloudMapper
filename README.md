@@ -214,7 +214,3 @@ This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) f
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues, fork the repository and send pull requests.
-
-## Repository
-
-[https://github.com/tesserato/CloudMapper](https://github.com/tesserato/CloudMapper)
