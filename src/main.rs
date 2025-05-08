@@ -255,8 +255,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let initial_about_results: Vec<AboutResult> = remote_names
             .par_iter()
-            .map(|remote_name_str| { // remote_name_str is &String
-                let remote_name = remote_name_str.clone(); // Clone for ownership in this task
+            .map(|remote_name_str| {
+                let remote_name = remote_name_str.clone();
                 let remote_target = format!("{}:", remote_name);
                 let mut about_args_owned: Vec<String> = common_rclone_args.clone();
                 about_args_owned.extend(vec![
@@ -301,45 +301,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              println!("Interactively processing 'about' failures (if any)...");
         }
 
+        // This loop must be sequential due to user interaction and potential re-runs
         for result in initial_about_results {
             match result {
                 Ok(success_result) => {
                     final_about_results_for_report.push(Ok(success_result));
                 }
-                Err((remote_name, err_msg)) => {
-                    final_about_results_for_report.push(Err((remote_name.clone(), err_msg.clone())));
-
-                    eprintln!("  Warning: 'rclone about' failed for remote '{}': {}", remote_name, err_msg);
-                    let prompt_str = format!("  Do you want to attempt to reconnect remote '{}' now? (y/N): ", remote_name);
+                Err((remote_name, original_err_msg)) => { // remote_name is owned String here
+                    eprintln!("  Warning: Initial 'rclone about' failed for remote '{}': {}", remote_name, original_err_msg);
+                    let prompt_str = format!("  Do you want to attempt to reconnect remote '{}' and retry 'about'? (y/N): ", remote_name);
+                    
                     if ask_yes_no(&prompt_str) {
                         println!("  Attempting to reconnect remote '{}'...", remote_name);
-                        let reconnect_target = format!("{}:", remote_name);
+                        let reconnect_target_str = format!("{}:", remote_name); // Create a &str compatible string
                         let mut reconnect_args_cli: Vec<&str> = common_rclone_args.iter().map(|s| s.as_str()).collect();
                         reconnect_args_cli.push("config");
                         reconnect_args_cli.push("reconnect");
-                        reconnect_args_cli.push(&reconnect_target); // Needs to be a reference
+                        reconnect_args_cli.push(&reconnect_target_str); // Pass as reference
 
-                        // cloudmapper::run_command is for capturing output, here we just run it
                         let mut cmd = Command::new(rclone_executable);
                         cmd.args(&reconnect_args_cli);
-                        
                         println!("    Running: {} {}", rclone_executable, reconnect_args_cli.join(" "));
 
-                        match cmd.status() { // Use status for commands where output isn't parsed
+                        match cmd.status() {
                             Ok(status) => {
                                 if status.success() {
-                                    println!("    Reconnect command for '{}' completed successfully. It will be included in further processing.", remote_name);
+                                    println!("    Reconnect command for '{}' completed successfully.", remote_name);
                                 } else {
-                                    println!("    Reconnect command for '{}' failed. Status: {}. It will still be included for lsjson (which may also fail).", remote_name, status);
+                                    println!("    Reconnect command for '{}' failed. Status: {}.", remote_name, status);
                                 }
                             }
                             Err(e) => {
-                                println!("    Failed to execute reconnect command for '{}': {}. It will still be included for lsjson.", remote_name, e);
+                                println!("    Failed to execute reconnect command for '{}': {}.", remote_name, e);
                             }
                         }
-                    } else {
+
+                        // --- RETRY 'ABOUT' for this remote ---
+                        println!("  Retrying 'rclone about' for '{}'...", remote_name);
+                        let retry_remote_target_str = format!("{}:", remote_name);
+                        let mut retry_about_args_owned: Vec<String> = common_rclone_args.clone();
+                        retry_about_args_owned.extend(vec![
+                            "about".to_string(),
+                            retry_remote_target_str.clone(), 
+                            "--json".to_string(),
+                        ]);
+                        let retry_about_args_for_cmd: Vec<&str> =
+                            retry_about_args_owned.iter().map(|s| s.as_str()).collect();
+
+                        let retry_about_result = match cloudmapper::run_command(rclone_executable, &retry_about_args_for_cmd) {
+                            Ok(output) => {
+                                if output.status.success() {
+                                    let json_string = String::from_utf8_lossy(&output.stdout);
+                                    match serde_json::from_str::<RcloneAboutInfo>(&json_string) {
+                                        Ok(info) => {
+                                            println!("    Retry 'rclone about' for '{}' SUCCEEDED.", remote_name);
+                                            Ok((remote_name.clone(), info)) 
+                                        },
+                                        Err(e) => {
+                                            let err_msg = format!("Failed to parse 'about' JSON for remote '{}' on retry: {}", remote_name, e);
+                                            eprintln!("    Warning: {}", err_msg);
+                                            Err((remote_name.clone(), err_msg))
+                                        }
+                                    }
+                                } else {
+                                    let err_msg = format!("Retry 'about' command failed for remote '{}' (Status {}).", remote_name, output.status);
+                                    eprintln!("    Warning: {}", err_msg);
+                                    Err((remote_name.clone(), err_msg))
+                                }
+                            }
+                            Err(e) => {
+                                let err_msg = format!("Failed to execute retry 'about' command for remote '{}': {}", remote_name, e);
+                                eprintln!("    Warning: {}", err_msg);
+                                Err((remote_name.clone(), err_msg))
+                            }
+                        };
+                        final_about_results_for_report.push(retry_about_result);
+                        // If user chose to reconnect, we keep it for lsjson processing by default.
+                        
+                    } else { // User chose NOT to reconnect
                         println!("  Skipping further processing (lsjson) for remote '{}' as per user choice.", remote_name);
                         remotes_for_lsjson_processing.retain(|r_name| r_name != &remote_name);
+                        // Add the original error to the report
+                        final_about_results_for_report.push(Err((remote_name, original_err_msg)));
                     }
                 }
             }
@@ -347,7 +390,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
         match cloudmapper::process_about_results(
-            final_about_results_for_report,
+            final_about_results_for_report, // Use the updated list
             about_output_path.to_str().unwrap_or(ABOUT_OUTPUT_FILE_NAME),
         ) {
             Ok(_) => {}
@@ -375,8 +418,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let lsjson_results: Vec<RemoteProcessingResult> = remotes_for_lsjson_processing
             .par_iter()
-            .map(|remote_name_str| { // remote_name_str is &String
-                let remote_name = remote_name_str.clone(); // Clone for ownership
+            .map(|remote_name_str| {
+                let remote_name = remote_name_str.clone();
                 let start_lsjson_remote = Instant::now();
                 let mut lsjson_args_owned: Vec<String> = common_rclone_args.clone();
                 let remote_target = format!("{}:", remote_name);
@@ -458,12 +501,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut report_generation_error_flag = false;
 
     if files_collection.files.is_empty() {
-        if lsjson_process_errors > 0 || !remotes_for_lsjson_processing.is_empty() && remotes_processed_successfully_lsjson == 0 {
+        if lsjson_process_errors > 0 || (!remotes_for_lsjson_processing.is_empty() && remotes_processed_successfully_lsjson == 0) {
              println!("Warning: No file data collected from 'lsjson'. Skipping standard reports (Tree, Size, Duplicates, Extensions, Largest Files, Treemap).");
-        } else if remotes_for_lsjson_processing.is_empty() {
-             println!("Warning: No remotes were processed by 'lsjson'. Skipping standard reports.");
+        } else if remotes_for_lsjson_processing.is_empty() { // This implies no remotes were left after 'about' phase
+             println!("Warning: No remotes were processed by 'lsjson' (all skipped or failed initial 'about'). Skipping standard reports.");
         }
-        else {
+        else { // This implies lsjson ran but found 0 files for all processed remotes
              println!("No files found across successfully processed remotes via 'lsjson'. Skipping standard reports.");
         }
     } else {
