@@ -66,6 +66,40 @@ Check-GitTagExists -tag $tagName
 Write-Host "Initial checks passed."
 Write-Host ""
 
+# 0.5. Push current branch to remote (NEW STEP)
+Write-Host "--- Step 0.5: Pushing current branch to remote ---"
+$currentBranch = ""
+try {
+    $currentBranch = (git rev-parse --abbrev-ref HEAD).Trim()
+    if (-not $currentBranch) {
+        Write-Error "Could not determine current git branch."
+        exit 1
+    }
+    if ($currentBranch -eq "HEAD") {
+        Write-Error "Cannot push from a detached HEAD state. Please checkout a named branch before publishing."
+        exit 1
+    }
+}
+catch {
+    Write-Error "Failed to determine current git branch: $_"
+    exit 1
+}
+
+Write-Host "Current branch is '$currentBranch'."
+Write-Host "Attempting to push branch '$currentBranch' to remote 'origin'..."
+try {
+    git push origin "$currentBranch"
+    Write-Host "Branch '$currentBranch' pushed successfully to remote 'origin'."
+}
+catch {
+    Write-Error "Failed to push branch '$currentBranch': $_"
+    Write-Warning "Ensure your local branch '$currentBranch' is up-to-date with its remote counterpart and can be fast-forwarded on 'origin'."
+    Write-Warning "You may need to pull/rebase changes from the remote before retrying."
+    exit 1
+}
+Write-Host ""
+
+
 # 1. Generate Documentation
 Write-Host "--- Step 1: Generating Documentation ---"
 Write-Host "Running 'cargo doc --no-deps --open'..."
@@ -101,11 +135,11 @@ Write-Host ""
 # 3. Publish Crate
 Write-Host "--- Step 3: Publishing Crate to Crates.io ---"
 Write-Host "Attempting to publish crate version '$crateVersion'..."
-Write-Host "Running 'cargo publish --allow-dirty'..."
+Write-Host "Running 'cargo publish'..."
 try {
     # Using --allow-dirty here again for consistency with the packaging step.
     # `cargo publish` itself will do checks; this just avoids issues if Cargo.lock changed.
-    cargo publish --allow-dirty
+    cargo publish
 
     # Check if the command actually succeeded (cargo publish doesn't always throw on non-zero exit)
     if ($LASTEXITCODE -ne 0) {
