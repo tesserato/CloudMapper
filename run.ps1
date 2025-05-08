@@ -1,1 +1,1 @@
-cargo run #-- -c ./rclone.conf
+cargo run
