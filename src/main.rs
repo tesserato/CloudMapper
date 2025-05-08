@@ -2,7 +2,7 @@
 //!
 //! This binary uses the `cloudmapper` library to:
 //! 1. Parse command-line arguments.
-//! 2. Interact with `rclone` to list remotes, files (`lsjson`), and storage usage (`about`).
+//! 2. Interact with `rclone` to list remotes, get storage usage (`about`), and list files (`lsjson`).
 //! 3. Process the collected data.
 //! 4. Generate various reports (tree structure, duplicates, extensions, size, about, HTML treemap)
 //!    based on user configuration.
@@ -246,7 +246,120 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Found {} remotes: {:?}", remote_names.len(), remote_names);
     println!("{SECTION_SEPARATOR}");
 
-    // --- 2. Process Remotes (lsjson) in Parallel ---
+    // --- 2. Generate About Report (Parallel Fetch, Sequential Process) ---
+    let mut about_report_error = false; // Flag for errors specific to the 'about' report phase.
+    if args.about_report {
+        println!("Fetching 'rclone about' info in parallel...");
+        let about_fetch_start_time = Instant::now();
+        let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
+
+        // Determine which services to query for 'about' info.
+        // At this stage, files_collection is empty, so we must use remote_names.
+        let services_to_query = remote_names.clone();
+
+        // Proceed only if there are services to query.
+        if !services_to_query.is_empty() {
+            // Fetch 'about --json' for each service in parallel using Rayon.
+            let about_results: Vec<AboutResult> = services_to_query
+                .par_iter()
+                .map(|remote_name| {
+                    // Prepare arguments for `rclone about <remote>: --json`
+                    let remote_target = format!("{}:", remote_name);
+                    let mut about_args_owned: Vec<String> = common_rclone_args.clone();
+                    about_args_owned.extend(vec![
+                        "about".to_string(),
+                        remote_target, // Target remote
+                        "--json".to_string(), // Request JSON output
+                    ]);
+                    let about_args_for_cmd: Vec<&str> =
+                        about_args_owned.iter().map(|s| s.as_str()).collect();
+
+                    // Execute the command for this remote.
+                    match cloudmapper::run_command(rclone_executable, &about_args_for_cmd) {
+                        Ok(output) => {
+                            // Command executed, check status.
+                            if output.status.success() {
+                                // Command succeeded, parse JSON.
+                                let json_string = String::from_utf8_lossy(&output.stdout);
+                                match serde_json::from_str::<RcloneAboutInfo>(&json_string) {
+                                    Ok(info) => Ok((remote_name.clone(), info)), // Success
+                                    Err(e) => {
+                                        // JSON parsing failed.
+                                        let err_msg =
+                                            format!("Failed to parse 'about' JSON for remote '{}': {}", remote_name, e);
+                                        eprintln!("  Warning: {}", err_msg); // Log warning
+                                        // The suggestion to reconnect is not strictly for parsing errors, but for command failures.
+                                        Err((remote_name.clone(), err_msg)) // Return error
+                                    }
+                                }
+                            } else {
+                                // rclone about command failed.
+                                let err_msg = format!(
+                                    "'about' command failed for remote '{}' (Status {}). Check logs for stderr.",
+                                    remote_name,
+                                    output.status,
+                                );
+                                eprintln!("  Warning: {}", err_msg); // Log warning
+                                eprintln!("  Suggestion: Try reconnecting the remote with 'rclone config reconnect {}:'", remote_name);
+                                Err((remote_name.clone(), err_msg)) // Return error
+                            }
+                        }
+                        Err(e) => {
+                            // Failed to execute rclone about.
+                            let err_msg = format!("Failed to execute 'about' command for remote '{}': {}", remote_name, e);
+                            eprintln!("  Warning: {}", err_msg); // Log warning
+                            eprintln!("  Suggestion: Try reconnecting the remote with 'rclone config reconnect {}:'", remote_name);
+                            Err((remote_name.clone(), err_msg)) // Return error
+                        }
+                    }
+                })
+                .collect(); // Collect results from parallel tasks.
+
+            let about_fetch_duration = about_fetch_start_time.elapsed();
+            println!(
+                "Finished parallel 'about' fetching in {:.2}s.",
+                about_fetch_duration.as_secs_f32()
+            );
+
+            // Process the collected 'about' results sequentially and write the report.
+            match cloudmapper::process_about_results(
+                about_results,
+                about_output_path.to_str().unwrap_or_else(|| {
+                    // Handle unlikely case where output path isn't valid UTF-8.
+                    eprintln!(
+                        "Warning: Could not convert 'about' output path to string. Using default filename '{}'.",
+                         ABOUT_OUTPUT_FILE_NAME
+                    );
+                    ABOUT_OUTPUT_FILE_NAME // Use default name if path conversion fails
+                }),
+            ) {
+                Ok(_) => { /* Success message already printed by process_about_results */ }
+                Err(e) => {
+                    // Error occurred during result processing or file writing.
+                    eprintln!("Error processing 'about' results or writing report: {}", e);
+                    about_report_error = true; // Set flag
+                }
+            }
+        } else {
+            // No services were identified to query (e.g., listremotes failed or returned empty).
+            println!("Skipping 'about' report as no remotes were identified for querying.");
+            // Ensure no old 'about' report file remains if skipped.
+            if about_output_path.exists() {
+                let _ = fs::remove_file(&about_output_path);
+            }
+        }
+    } else {
+        // 'About' report was explicitly disabled by flag.
+        println!("'About' report generation skipped by flag.");
+        let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
+        // Ensure no old 'about' report file remains if skipped.
+        if about_output_path.exists() {
+            let _ = fs::remove_file(&about_output_path);
+        }
+    }
+    println!("{SECTION_SEPARATOR}");
+
+    // --- 3. Process Remotes (lsjson) in Parallel ---
     println!("Processing remotes in parallel (rclone lsjson)...");
     let lsjson_start_time = Instant::now();
 
@@ -306,13 +419,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     } else {
                         // rclone lsjson command failed (non-zero exit code).
-                        // let stderr = String::from_utf8_lossy(&output.stderr);
                          // stderr likely already printed by run_command, create concise message here.
                         let err_msg = format!(
                             "rclone lsjson command failed for remote '{}'. Status: {}. Check logs for stderr.",
                             remote_name,
                             output.status,
-                            // stderr.trim() // Trimmed stderr might be useful here too
                         );
                         eprintln!("  {}", err_msg); // Log the command failure.
                         // Return Err result with remote name and error message.
@@ -341,7 +452,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{SECTION_SEPARATOR}");
 
-    // --- 3. Aggregate lsjson Results Sequentially ---
+    // --- 4. Aggregate lsjson Results Sequentially ---
     println!("Aggregating lsjson results...");
     let mut lsjson_process_errors: u32 = 0; // Count errors during lsjson phase.
     let mut remotes_processed_successfully: u32 = 0; // Count successful lsjson runs.
@@ -364,34 +475,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{SECTION_SEPARATOR}");
 
-    // --- 4. Generate Standard Reports (if data exists) ---
+    // --- 5. Generate Standard Reports (if data exists) ---
     let mut report_generation_error = false; // Flag to track errors during report generation.
 
     // Check if any file data was actually collected before attempting reports.
     if files_collection.files.is_empty() {
-        // Handle cases where no files were found or processed successfully.
         if lsjson_process_errors > 0 {
             println!(
-                "Warning: No file data collected, likely due to {} lsjson error(s). Skipping standard report generation (Tree, Size, Duplicates, Extensions, Largest Files, Treemap).",
+                "Warning: No file data collected from 'lsjson' due to {} error(s). Skipping standard reports (Tree, Size, Duplicates, Extensions, Largest Files, Treemap).",
                 lsjson_process_errors
             );
         } else if remotes_processed_successfully == 0 && !remote_names.is_empty() {
-            // This case means lsjson ran for remotes but returned empty lists or only errors.
-            println!("Warning: No data successfully processed from any remote via lsjson. Skipping standard report generation.");
-        } else {
-            // This case means lsjson succeeded for >= 1 remote but found 0 files.
-            println!("No files found across successfully processed remotes. Skipping standard report generation.");
+             println!("Warning: No data successfully processed from any remote via 'lsjson'. Skipping standard reports.");
+        } else if !remote_names.is_empty() { // implies remotes_processed_successfully > 0 but 0 files found
+             println!("No files found across successfully processed remotes via 'lsjson'. Skipping standard reports.");
+        } else { // This case should ideally be caught by the remote_names.is_empty() check after listremotes
+             println!("No remotes available. Skipping standard reports.");
         }
-
-        // Even if standard reports are skipped, the 'about' report might still be desired.
-        if !args.about_report || remote_names.is_empty() {
-            // If 'about' is also disabled or no remotes exist, we are truly done.
-            println!("No reports to generate based on configuration and available data. Exiting.");
-            return Ok(());
-        } else {
-            // If 'about' is enabled, proceed to that section only.
-            println!("Proceeding with 'about' report generation only.");
-        }
+        // The 'about' report has already been handled or skipped by this point.
     } else {
         // We have file data, proceed with generating standard reports.
         println!("Generating standard reports...");
@@ -403,15 +504,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.output_mode,
             args.duplicates,
             args.extensions_report,
-            args.largest_files, // Pass the new largest_files count
+            args.largest_files, 
             args.html_treemap,
             &output_dir,
             TREE_OUTPUT_FILE_NAME,
-            TREE_OUTPUT_FILE_NAME,
+            TREE_OUTPUT_FILE_NAME, // folder_content_filename, same as tree_base_filename for now
             DUPLICATES_OUTPUT_FILE_NAME,
             SIZE_OUTPUT_FILE_NAME,
             EXTENSIONS_OUTPUT_FILE_NAME,
-            LARGEST_FILES_OUTPUT_FILE_NAME, // Pass the new filename
+            LARGEST_FILES_OUTPUT_FILE_NAME, 
             TREEMAP_OUTPUT_FILE_NAME,
             FOLDER_ICON,
             FILE_ICON,
@@ -431,7 +532,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "  File list report: {}",
                         output_dir.join(TREE_OUTPUT_FILE_NAME).display()
                     ),
-                    // For Remotes/Folders mode, point to the directory.
                     _ => println!(
                         "  File list/structure output generated in: {}",
                         output_dir.display()
@@ -475,121 +575,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("{SECTION_SEPARATOR}");
 
-    // --- 5. Generate About Report (Parallel Fetch, Sequential Process) ---
-    let mut about_report_error = false; // Flag for errors specific to the 'about' report phase.
-    if args.about_report {
-        println!("Fetching 'rclone about' info in parallel...");
-        let about_fetch_start_time = Instant::now();
-        let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
-
-        // Determine which services to query for 'about' info.
-        // Prefer the list derived from successfully processed lsjson data,
-        // fallback to the initial list from `listremotes` if lsjson failed entirely.
-        let services_to_query = if !files_collection.roots_by_service.is_empty() {
-            files_collection.get_service_names() // Get names from successfully processed remotes
-        } else {
-            remote_names.clone() // Fallback to initial list if no data was collected
-        };
-
-        // Proceed only if there are services to query.
-        if !services_to_query.is_empty() {
-            // Fetch 'about --json' for each service in parallel using Rayon.
-            let about_results: Vec<AboutResult> = services_to_query
-                .par_iter()
-                .map(|remote_name| {
-                    // Prepare arguments for `rclone about <remote>: --json`
-                    let remote_target = format!("{}:", remote_name);
-                    let mut about_args_owned: Vec<String> = common_rclone_args.clone();
-                    about_args_owned.extend(vec![
-                        "about".to_string(),
-                        remote_target, // Target remote
-                        "--json".to_string(), // Request JSON output
-                    ]);
-                    let about_args_for_cmd: Vec<&str> =
-                        about_args_owned.iter().map(|s| s.as_str()).collect();
-
-                    // Execute the command for this remote.
-                    match cloudmapper::run_command(rclone_executable, &about_args_for_cmd) {
-                        Ok(output) => {
-                            // Command executed, check status.
-                            if output.status.success() {
-                                // Command succeeded, parse JSON.
-                                let json_string = String::from_utf8_lossy(&output.stdout);
-                                match serde_json::from_str::<RcloneAboutInfo>(&json_string) {
-                                    Ok(info) => Ok((remote_name.clone(), info)), // Success
-                                    Err(e) => {
-                                        // JSON parsing failed.
-                                        let err_msg =
-                                            format!("Failed to parse 'about' JSON for remote '{}': {}", remote_name, e);
-                                        eprintln!("  Warning: {}", err_msg); // Log warning
-                                        Err((remote_name.clone(), err_msg)) // Return error
-                                    }
-                                }
-                            } else {
-                                // rclone about command failed.
-                                // let stderr = String::from_utf8_lossy(&output.stderr);
-                                let err_msg = format!(
-                                    "'about' command failed for remote '{}' (Status {}). Check logs for stderr.",
-                                    remote_name,
-                                    output.status,
-                                    // stderr.trim()
-                                );
-                                eprintln!("  Warning: {}", err_msg); // Log warning
-                                Err((remote_name.clone(), err_msg)) // Return error
-                            }
-                        }
-                        Err(e) => {
-                            // Failed to execute rclone about.
-                            let err_msg = format!("Failed to execute 'about' command for remote '{}': {}", remote_name, e);
-                            eprintln!("  Warning: {}", err_msg); // Log warning
-                            Err((remote_name.clone(), err_msg)) // Return error
-                        }
-                    }
-                })
-                .collect(); // Collect results from parallel tasks.
-
-            let about_fetch_duration = about_fetch_start_time.elapsed();
-            println!(
-                "Finished parallel 'about' fetching in {:.2}s.",
-                about_fetch_duration.as_secs_f32()
-            );
-
-            // Process the collected 'about' results sequentially and write the report.
-            match cloudmapper::process_about_results(
-                about_results,
-                about_output_path.to_str().unwrap_or_else(|| {
-                    // Handle unlikely case where output path isn't valid UTF-8.
-                    eprintln!(
-                        "Warning: Could not convert 'about' output path to string. Using default filename '{}'.",
-                         ABOUT_OUTPUT_FILE_NAME
-                    );
-                    ABOUT_OUTPUT_FILE_NAME // Use default name if path conversion fails
-                }),
-            ) {
-                Ok(_) => { /* Success message already printed by process_about_results */ }
-                Err(e) => {
-                    // Error occurred during result processing or file writing.
-                    eprintln!("Error processing 'about' results or writing report: {}", e);
-                    about_report_error = true; // Set flag
-                }
-            }
-        } else {
-            // No services were identified to query (e.g., listremotes failed or returned empty).
-            println!("Skipping 'about' report as no remotes were identified for querying.");
-            // Ensure no old 'about' report file remains if skipped.
-            if about_output_path.exists() {
-                let _ = fs::remove_file(&about_output_path);
-            }
-        }
-    } else {
-        // 'About' report was explicitly disabled by flag.
-        println!("'About' report generation skipped by flag.");
-        let about_output_path = output_dir.join(ABOUT_OUTPUT_FILE_NAME);
-        // Ensure no old 'about' report file remains if skipped.
-        if about_output_path.exists() {
-            let _ = fs::remove_file(&about_output_path);
-        }
-    }
 
     // --- 6. Print Summary ---
     let total_duration = overall_start_time.elapsed();
@@ -604,11 +589,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  Remotes successfully processed via 'lsjson': {}",
         remotes_processed_successfully
     );
-    // Calculate total errors encountered across different phases.
-    // Note: process_about_results currently logs errors but doesn't contribute to this count directly.
-    let total_errors = lsjson_process_errors // Errors during lsjson fetching/parsing
-        + if report_generation_error { 1 } else { 0 } // Error during standard report writing
-        + if about_report_error { 1 } else { 0 }; // Error during about report writing/processing
+    let total_errors = lsjson_process_errors 
+        + if report_generation_error { 1 } else { 0 } 
+        + if about_report_error { 1 } else { 0 }; 
     println!(
         "  Errors encountered during processing/reporting: {}",
         total_errors
@@ -617,15 +600,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- 7. Final Result ---
     if total_errors > 0 || report_generation_error || about_report_error {
-        // If any significant errors occurred, report completion with errors.
         eprintln!("CloudMapper completed with errors. Please check logs above.");
-        // Return a generic error to indicate non-successful completion.
         Err(Box::new(io::Error::new(
             ErrorKind::Other,
             "Processing completed with one or more errors.",
         )))
     } else {
-        // All steps completed without critical errors.
         println!("CloudMapper processing completed successfully.");
         Ok(())
     }
