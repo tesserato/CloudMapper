@@ -1,4 +1,7 @@
 # Script to generate documentation, publish the crate, and tag the release
+cargo package --list --allow-dirty
+
+# exit
 
 # --- Configuration ---
 $ErrorActionPreference = "Stop" # Exit script on any error
