@@ -11,7 +11,7 @@
 > CloudMapper operates in a **read-only** manner regarding your cloud storage. It **does not have direct access** to your cloud storage providers. All interactions with your cloud services are performed by invoking the `rclone` command-line tool. CloudMapper **cannot write to, delete from, or modify your cloud storage in any way**. Its operations are limited to listing files/folders and querying storage usage information via `rclone`. Any report suggesting potential savings (e.g., from duplicates) is for informational purposes only; actions to modify cloud data must be taken by you, typically using `rclone` or your cloud provider's interface directly.
 
 
-CloudMapper is a command-line utility designed to help you understand and Analyse your cloud storage. It uses [rclone](https://rclone.org) to interface with various cloud storage providers, gathers information about your files and their structure, and then generates several insightful reports, including:
+CloudMapper is a command-line utility designed to help you understand and Analyse your cloud storage. It uses [Rclone](https://rclone.org) to interface with various cloud storage providers, gathers information about your files and their structure, and then generates several insightful reports, including:
 
 *   A detailed text tree view of your files and folders (for `Single`/`Remotes` modes) or a mirrored local directory structure with placeholders for the actual files (for `Folders` mode).
 *   A report on duplicate files (based on hashes).
@@ -25,7 +25,7 @@ CloudMapper is a command-line utility designed to help you understand and Analys
 
 **`treemap.html`: (For an similar, interactive example, click [here](https://echarts.apache.org/examples/en/editor.html?c=treemap-disk))**
 
-![Treemap](https://raw.githubusercontent.com/tesserato/CloudMapper/refs/heads/main/treemap.jpeg)
+![Treemap](https://raw.githubusercontent.com/tesserato/CloudMapper/refs/heads/main/treemap.gif)
 
 
 **`files.txt` (In `Single` mode, or the content file like `_MyRemote files.txt` in `Remotes` mode, or the content file within each directory in `Folders` mode):**
