@@ -23,9 +23,9 @@ CloudMapper is a command-line utility designed to help you understand and Analys
 
 ## Example Output
 
-**`treemap.html`: (For an similar, interactive example, click [here](https://echarts.apache.org/examples/en/editor.html?c=treemap-disk))**
-
 ![Treemap](https://raw.githubusercontent.com/tesserato/CloudMapper/refs/heads/main/treemap.gif)
+
+**`treemap.html`: (For an similar, interactive example, click [here](https://echarts.apache.org/examples/en/editor.html?c=treemap-disk))**
 
 
 **`files.txt` (In `Single` mode, or the content file like `_MyRemote files.txt` in `Remotes` mode, or the content file within each directory in `Folders` mode):**
